@@ -1,0 +1,1 @@
+{"workspace": "F:\\cluade_code\\城市数据分析平台与智能体\\apps\\api\\app\\workspace", "skill_id": "kernel-density", "params": {"point_layer_id": "yuehai_餐饮_poi", "area_layer_id": "yuehai_street", "bandwidth_m": 50, "cell_size_m": 50}}

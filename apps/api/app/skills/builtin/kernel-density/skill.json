@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "id": "kernel-density",
+  "kind": "executable",
+  "name": "核密度分析",
+  "description": "点图层 -> 核密度（KDE）网格多边形图层。真计算（UTM 米制网格 + scipy gaussian_kde），结果按 density 字段分层设色上图。",
+  "core_question": "",
+  "keywords": [],
+  "required_data": [],
+  "outputs": [],
+  "indicators": [],
+  "body": "# 核密度分析\n\n## 适用场景\n\n用户要对点图层（如餐饮 POI、事件点）做空间密度分布分析，问「哪里密度高」「热点在哪」「密度分布如何」。\n\n## 执行方式\n\n- **可执行 skill**：Executor 命中后用 `execute_skill_script`（skill_id=`kernel-density`）代码直跑，真计算。\n- 底层引擎：`app.gis.engine.kernel_density`（UTM 米制网格 + scipy gaussian_kde）。\n- 产物：网格多边形 GeoJSON 图层（`<点id>_kde`），按 `density` 字段分层设色（graduated 5 级）上图；密度直方图进成果栏。\n\n## 参数\n\n| 参数 | 必填 | 说明 |\n|---|---|---|\n| `point_layer_id` | 是 | 点图层 id（平台 POI 或工作区点图层，如 `poi_餐饮`） |\n| `area_layer_id` | 否 | 研究范围多边形图层 id，把点裁到范围内再算 |\n| `cell_size_m` | 否 | 密度网格边长（米），默认 50（引擎超限时自动放宽 500/800/1000） |\n| `bandwidth_m` | 否 | 核平滑带宽（米）；默认自动带宽并封顶 150m |\n| `bw_method` | 否 | 自动带宽方法 scott/silverman，默认 scott |\n\n## 注意事项\n\n- 数值来自引擎真实计算，禁止 LLM 编造密度数字；stats 的 max/mean/median 以 output.json 为准。\n- 平台图层只支持 GeoJSON——本 skill 自动生成网格多边形图层，禁止改存 .npy/.tif。\n- 网格数超引擎 5 万格上限时自动放大格网退档（真计算不变，只降采样分辨率）。",
+  "plan": null,
+  "scope": "builtin",
+  "version": "0.1.0",
+  "revision": 1,
+  "status": "validated",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "geopandas",
+      "shapely",
+      "scipy",
+      "numpy"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "point_layer_id": {
+        "type": "string",
+        "description": "点图层 id（平台 POI 或工作区点图层，如 poi_餐饮）"
+      },
+      "area_layer_id": {
+        "type": "string",
+        "description": "可选：研究范围多边形图层 id，把点裁到范围内再算密度"
+      },
+      "cell_size_m": {
+        "type": "integer",
+        "description": "密度网格边长（米），默认 50",
+        "default": 50
+      },
+      "bandwidth_m": {
+        "type": "number",
+        "description": "核平滑带宽（米）；默认自动带宽并封顶 150m"
+      },
+      "bw_method": {
+        "type": "string",
+        "description": "自动带宽方法 scott/silverman，默认 scott"
+      }
+    },
+    "required": [
+      "point_layer_id"
+    ]
+  },
+  "output_schema": {},
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [
+      "bandwidth_m",
+      "bw_method",
+      "cell_size_m",
+      "point_layer_id",
+      "layer_id",
+      "area_layer_id"
+    ],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 33,
+    "last_run_at": "2026-08-19T03:27:32"
+  },
+  "created_at": "2026-08-18T00:00:00",
+  "updated_at": "2026-08-19T03:27:32"
+}

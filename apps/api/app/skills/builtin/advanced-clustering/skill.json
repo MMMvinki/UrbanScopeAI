@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.0",
+  "kind": "executable",
+  "id": "advanced-clustering",
+  "name": "空间聚类",
+  "version": "0.1.0",
+  "revision": 1,
+  "status": "validated",
+  "scope": "builtin",
+  "description": "点图层空间聚类（DBSCAN / K-Means）。真计算：UTM 米制坐标 sklearn 聚类，输出 clustered（按簇分类设色）+ centers（质心）两层与簇统计。",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "geopandas",
+      "shapely",
+      "scipy",
+      "numpy",
+      "scikit-learn"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "layer_id": {
+        "type": "string",
+        "description": "要聚类的点图层 id"
+      },
+      "method": {
+        "type": "string",
+        "description": "dbscan 或 kmeans，默认 dbscan"
+      },
+      "eps": {
+        "type": "number",
+        "description": "DBSCAN 邻域半径（米），默认 300"
+      },
+      "min_samples": {
+        "type": "integer",
+        "description": "DBSCAN 核心点最少邻居数，默认 5"
+      },
+      "k": {
+        "type": "integer",
+        "description": "K-Means 簇数；默认按点量自适应（3-10）"
+      }
+    },
+    "required": [
+      "layer_id"
+    ]
+  },
+  "output_schema": {},
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [
+      "k",
+      "eps",
+      "layer_id",
+      "min_samples",
+      "method"
+    ],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 2,
+    "last_run_at": "2026-08-18T22:49:48"
+  },
+  "created_at": "2026-08-18T00:00:00",
+  "updated_at": "2026-08-18T22:49:48"
+}

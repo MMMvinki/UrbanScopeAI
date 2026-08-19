@@ -1,0 +1,197 @@
+"""CSV/Excel → GeoJSON 转换工具。
+
+裁剪自开源实现，适配 ToolResult / ToolContext（移植来源见 NOTICE.md）：
+- 坐标列名自动检测（lat/latitude/y/纬度 与 lng/lon/longitude/x/经度）；
+- 自定义分隔符（csv.Sniffer 自动探测）；.xlsx 走 openpyxl 分支；
+- 输入/输出路径必须解析在 workspace 内（L2 边界）。
+"""
+
+from __future__ import annotations
+
+import csv
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+from app.models.tool import ToolResult
+from app.tools.context import get_current_context
+
+LAT_PATTERNS = [
+    r"^lat$", r"^latitude$", r"^lat_?d$", r"^y$", r"^纬度$",
+    r"^lat_wgs84$", r"^point_y$", r"^lat_dd$",
+]
+LNG_PATTERNS = [
+    r"^lng$", r"^lon$", r"^long$", r"^longitude$", r"^lng_?d$",
+    r"^x$", r"^经度$", r"^lon_wgs84$", r"^point_x$", r"^lon_dd$",
+]
+
+
+def _detect_column(headers: list[str], patterns: list[str]) -> str | None:
+    for pattern in patterns:
+        for h in headers:
+            if re.match(pattern, h.strip(), re.IGNORECASE):
+                return h
+    return None
+
+
+def _workspace_path():
+    ctx = get_current_context()
+    if ctx.workspace_path:
+        return Path(str(ctx.workspace_path)).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
+def _resolve_input_path(raw_path: str) -> Path:
+    workspace = _workspace_path()
+    path = Path(raw_path).expanduser()
+    resolved = path.resolve() if path.is_absolute() else (workspace / path).resolve()
+    if workspace != resolved and workspace not in resolved.parents:
+        raise ValueError(f"input_path 必须位于 workspace 内: {raw_path}")
+    return resolved
+
+
+def _resolve_output_path(raw_path: str | None, input_path: Path) -> Path:
+    workspace = _workspace_path()
+    if raw_path:
+        path = Path(raw_path).expanduser()
+        resolved = path.resolve() if path.is_absolute() else (workspace / path).resolve()
+    else:
+        resolved = input_path.with_suffix(".geojson").resolve()
+    if workspace != resolved and workspace not in resolved.parents:
+        raise ValueError(f"output_path 必须位于 workspace 内: {raw_path or resolved}")
+    if resolved.suffix.lower() not in {".geojson", ".json"}:
+        resolved = resolved.with_suffix(".geojson")
+    return resolved
+
+
+def _parse_property(value: str | None) -> Any:
+    if value is None or not str(value).strip():
+        return None
+    text = str(value).strip()
+    try:
+        return float(text) if "." in text else int(text)
+    except ValueError:
+        return text
+
+
+def _build_geojson(rows: list[dict], lat_col: str, lng_col: str) -> tuple[dict, int]:
+    features: list[dict] = []
+    skipped = 0
+    for i, row in enumerate(rows):
+        try:
+            lat = float(row[lat_col])
+            lng = float(row[lng_col])
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+        if lat < -90 or lat > 90 or lng < -180 or lng > 180:
+            skipped += 1
+            continue
+        properties = {
+            key: _parse_property(value)
+            for key, value in row.items()
+            if key not in (lat_col, lng_col)
+        }
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lng, lat]},
+            "properties": properties,
+            "id": i,
+        })
+    return {"type": "FeatureCollection", "features": features}, skipped
+
+
+def run_csv_to_geojson(params: dict) -> ToolResult:
+    """转换 CSV/Excel（带经纬度列）为 GeoJSON 并落盘 workspace。"""
+    raw_input = str(params.get("input_path", "")).strip()
+    if not raw_input:
+        return ToolResult(success=False, message="缺少必填参数 input_path")
+    lat_column = params.get("lat_column") or None
+    lng_column = params.get("lng_column") or None
+    delimiter = params.get("delimiter") or None
+
+    try:
+        path = _resolve_input_path(raw_input)
+        if not path.exists():
+            return ToolResult(success=False, message=f"CSV 文件不存在: {raw_input}")
+
+        if path.suffix.lower() == ".xlsx":
+            rows, headers = _read_xlsx(path)
+        else:
+            rows, headers = _read_csv(path, delimiter)
+
+        if not headers:
+            return ToolResult(success=False, message=f"CSV 无表头: {raw_input}")
+
+        lat_col = lat_column or _detect_column(headers, LAT_PATTERNS)
+        lng_col = lng_column or _detect_column(headers, LNG_PATTERNS)
+        if not lat_col or not lng_col:
+            return ToolResult(
+                success=False,
+                message=(
+                    f"无法自动识别坐标列。表头: {headers}。"
+                    "请用 lat_column/lng_column 指定（支持 lat/latitude/y/纬度 与 lng/lon/longitude/x/经度）。"
+                ),
+            )
+
+        geojson, skipped = _build_geojson(rows, lat_col, lng_col)
+        if not geojson["features"]:
+            return ToolResult(success=False, message=f"CSV 中无有效坐标行: {raw_input}")
+
+        out_path = _resolve_output_path(params.get("output_path"), path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(geojson, f, ensure_ascii=False)
+
+        return ToolResult(
+            success=True,
+            output={
+                "output_path": str(out_path),
+                "path": str(out_path),
+                "feature_count": len(geojson["features"]),
+                "skipped_rows": skipped,
+                "geometry_type": "Point",
+                "lat_column": lat_col,
+                "lng_column": lng_col,
+            },
+            message=f"已转换 {len(geojson['features'])} 行到 GeoJSON（跳过 {skipped} 行无效数据）→ {out_path}。",
+        )
+    except Exception as exc:
+        return ToolResult(success=False, message=f"CSV 转换失败: {exc}")
+
+
+def _read_csv(path: Path, delimiter: str | None) -> tuple[list[dict], list[str]]:
+    with open(path, "r", encoding="utf-8-sig") as f:
+        if not delimiter:
+            sample = f.read(4096)
+            f.seek(0)
+            try:
+                delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+            except csv.Error:
+                delimiter = ","
+        reader = csv.DictReader(f, delimiter=delimiter)
+        headers = list(reader.fieldnames or [])
+        return list(reader), headers
+
+
+def _read_xlsx(path: Path) -> tuple[list[dict], list[str]]:
+    import openpyxl
+
+    wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    ws = wb.active
+    rows = ws.iter_rows(values_only=True)
+    try:
+        headers_row = next(rows)
+    except StopIteration:
+        return [], []
+    headers = [str(h) if h is not None else f"col{i}" for i, h in enumerate(headers_row)]
+    data: list[dict] = []
+    for row in rows:
+        record = {}
+        for i, value in enumerate(row):
+            key = headers[i] if i < len(headers) else f"col{i}"
+            record[key] = value
+        data.append(record)
+    wb.close()
+    return data, headers

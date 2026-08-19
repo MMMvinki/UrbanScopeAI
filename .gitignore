@@ -1,0 +1,24 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.venv/
+.env
+.DS_Store
+
+# 第三方参考项目源码（仅本机研究用，不上传）
+downloads/
+
+# RunArchive / workspace 产物（下载数据、脚本、事件溯源、运行历史）
+apps/api/app/workspace/
+apps/api/workspace/
+
+# Claude Code 本地设置与开发截图（不上传）
+.claude/settings.local.json
+.claude/screenshots/
+
+# 平台数据不入库：运行时图层 platform_data（660MB，含 >100MB 单文件）与
+# 原始 shp 源 平台数据/（5GB）均超 GitHub 限制。需要数据时打包发给使用者，
+# 放到对应路径即可加载（详见 README「数据说明」）。
+apps/api/app/platform_data/
+平台数据/
