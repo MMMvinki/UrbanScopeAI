@@ -178,4 +178,3 @@ cd apps/api && PYTHONIOENCODING=utf-8 .venv/Scripts/python.exe scripts/verify_ll
 ```
 
 三条演示路径连跑（城市体检 / 人口薄弱 / 产业轨道），断言真流式与真实 LLM 路径。
-
