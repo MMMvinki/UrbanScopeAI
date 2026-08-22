@@ -22,3 +22,7 @@ apps/api/workspace/
 # 放到对应路径即可加载（详见 README「数据说明」）。
 apps/api/app/platform_data/
 平台数据/
+
+# 技能运行产物 / 服务器运行日志（本地，不上传）
+apps/api/app/skills/builtin/kernel-density/runs/
+apps/api/restart_logs/

@@ -1,6 +1,7 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
-pydantic==2.10.4
+# pydantic>=2.12 是 pydantic-ai-slim 的硬要求（venv 实际装 2.13.4）
+pydantic>=2.12
 starlette==0.41.3
 
 # 真 GIS 计算（GeoPandas/Shapely 矢量几何；PyProj 坐标投影；DuckDB 空间聚合）
@@ -21,4 +22,9 @@ PyYAML>=6.0
 openpyxl>=3.1
 
 # Phase 1：LiteLLM（多 Provider + 流式）
+# 注意：venv 里 openai 是 3.x（pydantic-ai-slim[openai] 要求 >=3.0.0）。
+# litellm 1.96.2 声明 openai<3.0.0，但实测 DeepSeek 路径兼容，勿降级 openai。
 litellm>=1.40
+
+# Agent 框架：PydanticAI（slim 核心 + openai extra，供 DeepSeek 原生 provider）
+pydantic-ai-slim[openai]==2.32.1

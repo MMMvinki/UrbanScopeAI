@@ -75,8 +75,8 @@ def _failed_plan(question: str) -> PlanResult:
     if len(task) > 40:
         task = task[:40] + "…"
     return _chat_plan(
-        f"抱歉，我这次没能规划「{task}」这个任务（AI 规划服务暂时不可用或未配置）。"
-        "请稍后重试，或换个更明确的问法。"
+        f"抱歉，我这次没能规划「{task}」这个任务（AI 规划调用失败，"
+        "可能是服务暂时不可用或未配置）。请稍后重试，或换个更明确的问法。"
     )
 
 

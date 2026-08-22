@@ -8,6 +8,7 @@
 - 任何异常返回 None，由 planner.plan_for 回退到规则版（演示永不挂）。
 """
 
+import os
 import re
 
 from app.agent import llm_client
@@ -405,6 +406,10 @@ def _normalize(question: str, raw: dict, history: list[dict] | None = None) -> P
     )
 
 
+# PydanticAI 迁移开关：默认走新 loop（pydai/planner_agent.py）；PA_AGENT=0 回旧 loop。
+PA_AGENT = os.environ.get("PA_AGENT", "1") != "0"
+
+
 def try_plan(
     question: str, history: list[dict] | None = None, conversation_id: str | None = None
 ) -> PlanResult | None:
@@ -413,6 +418,10 @@ def try_plan(
     history: 多轮对话记录（[{role, content}]），与当前问题拼接为完整上下文。
     conversation_id: 会话 id，用于注入该会话的多轮记忆摘要。
     """
+    if PA_AGENT:
+        from app.agent.pydai.planner_agent import pa_try_plan
+
+        return pa_try_plan(question, history, conversation_id)
     if not llm_client.is_available():
         return None
     messages: list[dict] = [{"role": "system", "content": _system_prompt(conversation_id)}]

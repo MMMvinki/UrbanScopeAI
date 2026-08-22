@@ -6,6 +6,7 @@ LLM 继续决策 → 直到 LLM 输出最终结论。Trace 与结果卡从真实
 """
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -992,6 +993,13 @@ def try_execute(
         )
     if not llm_client.is_available():
         return None
+
+    # PydanticAI 迁移开关：默认走新 loop（pydai/executor_agent.py，无轮次上限）；
+    # PA_AGENT=0 回旧手写 loop。产品层（样式短路/chat 守卫/is_available）已在上面共用。
+    if os.environ.get("PA_AGENT", "1") != "0":
+        from app.agent.pydai.executor_agent import pa_try_execute
+
+        return pa_try_execute(request, ctx=ctx, emit=emit)
 
     target_layers = [
         DATA_REGISTRY.get_layer(target)

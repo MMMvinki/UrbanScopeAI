@@ -9,6 +9,7 @@
     <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI" />
     <img src="https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.12" />
     <img src="https://img.shields.io/badge/GeoPandas-Shapely-4B8BBE?style=flat-square" alt="GeoPandas / Shapely" />
+    <img src="https://img.shields.io/badge/Version-v0.2.0-8A2BE2?style=flat-square" alt="Version v0.2.0" />
     <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square" alt="MIT License" />
   </p>
   <p align="center">
