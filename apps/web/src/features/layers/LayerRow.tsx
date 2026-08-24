@@ -31,6 +31,10 @@ interface LayerRowProps {
   onDragOver: (event: DragEvent<HTMLDivElement>, layerId: string) => void
   onDrop: (event: DragEvent<HTMLDivElement>, layerId: string) => void
   onDragEnd: () => void
+  /** 多选删除：多选模式下行首显示复选框（平台只读图层禁用）；拖拽把手隐藏 */
+  selectMode: boolean
+  selected: boolean
+  onToggleSelect: () => void
 }
 
 export function LayerRow({
@@ -50,6 +54,9 @@ export function LayerRow({
   onDragOver,
   onDrop,
   onDragEnd,
+  selectMode,
+  selected,
+  onToggleSelect,
 }: LayerRowProps) {
   const renameLayer = useAppStore((s) => s.renameLayer)
   // 色块用「生效填充色」：样式面板改色后即时反映；分级时用色带首档色
@@ -124,6 +131,7 @@ export function LayerRow({
     'layer-row',
     layer.visible ? 'is-visible' : 'is-hidden',
     dragging ? 'dragging' : '',
+    selectMode && selected ? 'is-selected' : '',
     indicatorClass,
   ]
     .filter(Boolean)
@@ -132,22 +140,43 @@ export function LayerRow({
   return (
     <div
       className={rowClass}
-      draggable
+      draggable={!selectMode}
       onDragStart={handleDragStart}
       onDragOver={(event) => onDragOver(event, layer.id)}
       onDrop={(event) => onDrop(event, layer.id)}
       onDragEnd={onDragEnd}
     >
-      {/* 专用拖拽把手：按住此栏才可拖动调整顺序 */}
-      <button
-        type="button"
-        className="layer-row__drag"
-        aria-label={`拖动 ${layer.name} 调整顺序`}
-        title="按住拖动调整顺序"
-        onPointerDown={handlePointerDown}
-      >
-        <GripVertical aria-hidden="true" />
-      </button>
+      {/* 多选模式：行首复选框（平台只读禁用）；否则为拖拽把手 */}
+      {selectMode ? (
+        <label
+          className="layer-row__select"
+          title={
+            layer.readonly
+              ? '平台数据只读，不可删除'
+              : selected
+                ? `取消选择 ${layer.name}`
+                : `选择 ${layer.name}`
+          }
+        >
+          <input
+            type="checkbox"
+            checked={selected}
+            disabled={layer.readonly}
+            onChange={onToggleSelect}
+            aria-label={`选择图层 ${layer.name}`}
+          />
+        </label>
+      ) : (
+        <button
+          type="button"
+          className="layer-row__drag"
+          aria-label={`拖动 ${layer.name} 调整顺序`}
+          title="按住拖动调整顺序"
+          onPointerDown={handlePointerDown}
+        >
+          <GripVertical aria-hidden="true" />
+        </button>
+      )}
 
       <button
         type="button"

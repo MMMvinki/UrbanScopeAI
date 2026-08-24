@@ -26,12 +26,45 @@ LNG_PATTERNS = [
     r"^x$", r"^经度$", r"^lon_wgs84$", r"^point_x$", r"^lon_dd$",
 ]
 
+# 归一化模糊识别的别名（按优先级排）：覆盖 WGS84_Lat / GCJ02_Lng / lon_84 等带前缀变体。
+# 注意：不包含 x/y 单字母，避免子串误匹配普通列（x/y 只在精确锚定层生效）。
+_LAT_ALIASES = ("latitude", "lat", "纬度")
+_LNG_ALIASES = ("longitude", "long", "lon", "lng", "经度")
+
+
+def _normalize_header(name: str) -> str:
+    """列名归一化：小写、去下划线/空格等非字母数字字符（保留中文）。"""
+    return re.sub(r"[^a-z0-9一-鿿]", "", name.lower())
+
+
+def _has_alias(normalized: str, alias: str) -> bool:
+    """归一化列名是否在词边界包含别名（防 relationship→lat、along→long 误判）。"""
+    idx = normalized.find(alias)
+    while idx != -1:
+        before_ok = idx == 0 or not normalized[idx - 1].isalpha()
+        after_ok = (idx + len(alias)) == len(normalized) or not normalized[idx + len(alias)].isalpha()
+        if before_ok and after_ok:
+            return True
+        idx = normalized.find(alias, idx + 1)
+    return False
+
 
 def _detect_column(headers: list[str], patterns: list[str]) -> str | None:
+    # 1) 精确锚定（优先，行为不变）：lat/latitude/y/纬度 与 lng/lon/longitude/x/经度
     for pattern in patterns:
         for h in headers:
             if re.match(pattern, h.strip(), re.IGNORECASE):
                 return h
+    # 2) 归一化模糊匹配：WGS84_Lng / GCJ02_Lat / LON_WGS84 等带前缀/大小写变体
+    is_lng = any(word in p for p in patterns for word in ("lng", "lon", "long"))
+    aliases = _LNG_ALIASES if is_lng else _LAT_ALIASES
+    normed: dict[str, str] = {}
+    for h in headers:
+        normed.setdefault(_normalize_header(h), h)  # 归一化后同名保留首列
+    for alias in aliases:
+        for normalized, original in normed.items():
+            if _has_alias(normalized, alias):
+                return original
     return None
 
 
@@ -131,7 +164,8 @@ def run_csv_to_geojson(params: dict) -> ToolResult:
                 success=False,
                 message=(
                     f"无法自动识别坐标列。表头: {headers}。"
-                    "请用 lat_column/lng_column 指定（支持 lat/latitude/y/纬度 与 lng/lon/longitude/x/经度）。"
+                    "请用 lat_column/lng_column 指定（支持 lat/latitude/y/纬度 与 lng/lon/longitude/x/经度；"
+                    "带前缀变体如 WGS84_Lat / GCJ02_Lng 也会自动识别）。"
                 ),
             )
 

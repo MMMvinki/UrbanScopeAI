@@ -336,11 +336,38 @@ export async function uploadLayer(
   }
 }
 
-/** Planner：把问题 + 多轮对话历史转成计划（history 作上下文记忆） */
-export const planQuestion = (question: string, history: ChatTurn[] = [], conversationId?: string) =>
+/** 暂存上传文件的返回结构（不解析/不注册图层，仅落盘到工作区 data/uploads/） */
+export interface StagedUpload {
+  staged_id: string
+  original_name: string
+  /** workspace 相对路径（如 data/uploads/oct_poi.csv），Agent 消息引用此路径 */
+  path: string
+  size: number
+}
+
+/** 暂存上传文件：只挂附件 chip，不上图层/不上地图。Agent 需要用时经 register_uploaded_file 创建图层。 */
+export async function stageUpload(file: File): Promise<StagedUpload> {
+  const form = new FormData()
+  form.append('file', file)
+  const response = await fetch(`${API_BASE}/uploads/stage`, { method: 'POST', body: form })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(detail ? `上传失败：${detail}` : `API ${response.status} /uploads/stage`)
+  }
+  return (await response.json()) as StagedUpload
+}
+
+/** Planner：把问题 + 多轮对话历史转成计划（history 作上下文记忆）；signal 支持「停止」即时中断 */
+export const planQuestion = (
+  question: string,
+  history: ChatTurn[] = [],
+  conversationId?: string,
+  signal?: AbortSignal,
+) =>
   request<PlanResult>('/agent/plan', {
     method: 'POST',
     body: JSON.stringify({ question, history, conversation_id: conversationId }),
+    signal,
   })
 
 /* ---------------- SSE 真流式 ---------------- */

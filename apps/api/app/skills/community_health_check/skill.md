@@ -20,14 +20,10 @@ outputs:
   - 分析结论
 plan:
   operation: coverage
-  targets:
-    - schools
-    - parks
-    - culture_centers
-  target_distances:
-    schools: 800
-    parks: 500
-    culture_centers: 1000
+  # targets 留空：由 Planner/Executor 按当前项目真实图层动态选取（硬编码
+  # schools/parks/culture_centers 在多数项目解析不到，会顶掉 LLM 选的真实 POI 图层）。
+  targets: []
+  target_distances: {}
 indicators:
   - name: 中学服务半径覆盖率
     data: 学校设施

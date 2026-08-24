@@ -144,6 +144,7 @@ def _system_prompt(request: ExecuteRequest, target_layers: list) -> str:
             "8. 【图表产出】emit_chart 仅在对比类别/分区/取值点 ≥2 时使用（少于 2 个可比项用指标卡即可）；可比类别合并成一张多系列图表，不要拆成多个近似单图；避免输出几乎相同的冗余图表（后端已有指纹去重，但勿刻意制造近似图）；图表数量不设硬性上限。",
             "9. 【方法论技能】若计划某步是 get_skill（skill_id 指向 SKILL.md 驱动的方法论技能，如 skill-creator），该工具返回的 output.body 就是该技能 SKILL.md 方法论正文——按它引导执行；若正文要求先澄清需求而当前信息不足，直接输出澄清问题作为回复，不要硬编工具调用；技能落盘必须用 create_skill 工具（受控契约），不要用 execute_code 或其它方式绕过它。",
             "10. 【参数缺失追问】execute_skill_script 因缺少必填参数而失败（或用户指令未指明该 skill 的关键参数）时，不要臆造参数值、也不要放弃——直接向用户追问缺失的参数（列出该 skill 的必填与可选参数名，如 point_layer_id / cell_size_m），拿到答复后再执行；参数有明确默认值且对结果影响不大时可先按默认执行并在结论里注明。",
+            "11. 【禁止复用旧结论】只要用户当前问题要求计算/可视化/重新计算（尤其本回合上传了新文件），即使对话历史或【多轮记忆】出现过相同或相近问题的结论，也必须重新调用工具执行、基于本次工具返回的真实数值作答；旧结论只作参考、绝不直接当答案复用，也不得因此跳过读取/注册新文件、执行计算等必要步骤。",
             "",
             "【execute_code 数据路径约定】",
             "1. 平台图层（只读底座，poi_*、shenzhen_* 等）在 '../platform_data/geojson/<图层id>.json'，"
@@ -257,7 +258,7 @@ def _tool_result_payload(result: ToolResult) -> str:
 def _generated_info(output_layer_id: str, args: dict) -> tuple[str, int]:
     base = output_layer_id
     word = "结果图层"
-    for suffix, label in (("_coverage", "服务范围"), ("_buffer", "缓冲区"), ("_kde", "核密度"), ("_clip", "裁剪"), ("_result", "结果图层")):
+    for suffix, label in (("_coverage", "服务范围"), ("_buffer", "缓冲区"), ("_kde", "核密度"), ("_clip", "裁剪"), ("_iso", "等时圈"), ("_bmi", "双变量自相关"), ("_result", "结果图层")):
         if output_layer_id.endswith(suffix):
             base = output_layer_id[: -len(suffix)]
             word = label
@@ -291,6 +292,9 @@ def _register_generated(generated: list[tuple[str, str, int]]) -> None:
                     geometry = geometry_type_for(geometry_types)
             except (json.JSONDecodeError, OSError):
                 pass
+        # 保留工具 handler 注册时带的更丰富元数据（字段 schema、描述），
+        # 避免此处重注册把 fields 冲成空、属性表/schema 对生成图层失效。
+        old_layer = DATA_REGISTRY.get_layer(layer_id)
         DATA_REGISTRY.register_generated(
             LayerMetadata(
                 id=layer_id,
@@ -301,6 +305,8 @@ def _register_generated(generated: list[tuple[str, str, int]]) -> None:
                 visible=True,
                 feature_count=feature_count,
                 crs="EPSG:4490",
+                fields=(old_layer.fields if old_layer and old_layer.fields else []),
+                description=(old_layer.description if old_layer else None),
                 generated_by="LLM Agent 工具调用",
             )
         )

@@ -44,7 +44,7 @@ from app.skills import SKILLS, SkillSpec, all_skills
 from app.tools import TOOLS, ToolSpec
 from app.tools.context import ToolContext
 from app.tools.shelf import catalog_tools
-from app.upload_service import UploadError, ingest_upload
+from app.upload_service import UploadError, ingest_upload, stage_upload as stage_upload_service
 from app.workspace import (
     DEM_TILES_DIR,
     LAYER_DATA_DIR,
@@ -83,8 +83,8 @@ app = FastAPI(title="UrbanScope AI API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    # 本地开发：允许任意 localhost/127.0.0.1 端口（vite 端口可能因占用漂移到 5174/5175…）
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    # 本地开发：允许任意 localhost/127.0.0.1/[::1] 端口（vite 端口可能因占用漂移到 5174/5175…）
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1|\[::1\]):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -208,6 +208,21 @@ async def upload_layer(
         return ingest_upload(file.filename or "upload", content, layer_name=layer_name)
     except UploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/uploads/stage")
+async def stage_upload(
+    file: UploadFile = File(...),
+) -> dict:
+    """暂存上传文件：只落盘，不解析/不注册图层。
+
+    Agent 对话框上传走这里：文件先挂到附件 chip，等 Agent 真正要用时再通过
+    register_uploaded_file 工具按需创建图层（避免上传即上地图）。
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+    return stage_upload_service(file.filename or "upload", content)
 
 
 @app.post("/agent/plan", response_model=PlanResult)

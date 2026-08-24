@@ -30,10 +30,13 @@ from app.tools.analysis import (
 )
 from app.tools.coverage import CoverageParams, run_coverage
 from app.tools.csv_geojson import run_csv_to_geojson
+from app.tools.isochrone import run_isochrone
+from app.tools.bivariate_moran import run_bivariate_moran
 from app.tools.extract_features import run_extract_features
 from app.tools.query_features import run_query_features
 from app.tools.registry import TOOLS
 from app.tools.register_layer import run_register_layer
+from app.tools.register_uploaded_file import run_register_uploaded_file
 from app.tools.web import run_webfetch, run_websearch
 
 
@@ -549,6 +552,8 @@ TOOL_IMPLEMENTATIONS: dict[str, Callable[..., ToolResult]] = {
     "list_datasets": run_list_datasets,
     "get_dataset_schema": run_get_dataset_schema,
     "coverage": run_coverage,
+    "isochrone": run_isochrone,
+    "bivariate_moran": run_bivariate_moran,
     "buffer": run_buffer,
     "spatial_join": run_spatial_join,
     "nearest_distance": run_nearest_distance,
@@ -563,6 +568,7 @@ TOOL_IMPLEMENTATIONS: dict[str, Callable[..., ToolResult]] = {
     "datasource_call": _run_datasource_call,
     "csv_to_geojson": run_csv_to_geojson,
     "register_layer": run_register_layer,
+    "register_uploaded_file": run_register_uploaded_file,
     "extract_features": run_extract_features,
     "query_features": run_query_features,
     # Phase 1：受控代码执行（L0 子进程 + L1 权限门）

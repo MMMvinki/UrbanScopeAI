@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { HeartPulse, MapPin, Paperclip, Send, Upload, X } from 'lucide-react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { HeartPulse, MapPin, Paperclip, Send, Square, Upload, X } from 'lucide-react'
 import { ChatMessage } from './ChatMessage'
 import { TypingFooter } from './TypingFooter'
 import { TOOL_LABELS } from './ProcessRows'
 import { useAppStore } from '../../store/useAppStore'
-import { fetchAllGeojson, fetchLayers, toLayer, uploadLayer } from '../../lib/api'
-import { setGeojsonCache } from '../map/mapLayers'
+import { stageUpload } from '../../lib/api'
 
 interface AgentPanelProps {
   /** 浮窗模式的关闭按钮（左栏底部 Agent 按钮 / 浮窗右上角 X 关闭） */
@@ -57,8 +56,6 @@ const MENTION_FULL_RE = /@([\p{L}\p{N}_-]+)/gu
 
 const ACCEPTED = '.csv,.xlsx,.tsv,.txt,.geojson,.json,.gpkg,.shp,.zip'
 const SUPPORTED_EXT = ['csv', 'xlsx', 'tsv', 'txt', 'geojson', 'json', 'gpkg', 'shp', 'zip']
-/** execute_code 相对 workspace 的图层物化路径（平台数据路径坑的规避：把路径写进消息） */
-const UPLOADED_PATH = 'data/layers'
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -72,6 +69,13 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
   const openUploadModal = useAppStore((s) => s.openUploadModal)
   const allSkills = useAppStore((s) => s.allSkills)
   const promptSkills = useAppStore((s) => s.skills)
+  const abortAgentRun = useAppStore((s) => s.abortAgentRun)
+
+  // 是否有 Agent 运行中（loading=规划 / streaming=执行）：发送按钮切「停止」
+  const isRunning = useMemo(
+    () => messages.some((m) => m.status === 'streaming' || m.status === 'loading'),
+    [messages],
+  )
 
   // 底部工作状态（TypingFooter）：根据最后一条进行中的 agent 消息推断
   const activeLabel = useMemo(() => {
@@ -108,10 +112,42 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
   const fileRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
+  // 已上传但尚未发送的附件（Codex 式：上传不立刻发送，可补文字后点发送一起发出；
+  // 上传只暂存文件，不注册图层/不上地图，等 Agent 真正要用时才经 register_uploaded_file 创建）
+  const [attachments, setAttachments] = useState<
+    Array<{ stagedId: string; name: string; path: string }>
+  >([])
 
-  // @ 提及状态：光标前正在输入的 token
-  const [mention, setMention] = useState<{ token: string; start: number } | null>(null)
+  // @ 提及状态：光标前正在输入的 token；picker=true 为工具栏 @ 按钮呼出的全量面板（无 @ 前缀）
+  const [mention, setMention] = useState<{ token: string; start: number; picker?: boolean } | null>(null)
   const [mentionActive, setMentionActive] = useState(0)
+  const mentionPopRef = useRef<HTMLDivElement>(null)
+  const mentionBtnRef = useRef<HTMLButtonElement>(null)
+
+  // 点击弹窗以外（含空白、输入区、其他控件）→ 关闭 @ 弹窗；弹窗与 @ 按钮自身除外
+  useEffect(() => {
+    if (!mention) return
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (mentionPopRef.current?.contains(target)) return
+      if (mentionBtnRef.current?.contains(target)) return
+      setMention(null)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [mention])
+
+  // 输入区高度：随内容自动增高/收缩（min 42px ~ max 200px，超出内部滚动）
+  const autosizeInput = useCallback(() => {
+    const el = inputRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.max(42, Math.min(el.scrollHeight, 200))}px`
+  }, [])
+  // useLayoutEffect 在 React commit 后、paint 前测量，值已提交无竞态（rAF 在清空/快速输入时测得偏大）
+  useLayoutEffect(() => {
+    autosizeInput()
+  }, [input, autosizeInput])
 
   // @ 提及数据源：allSkills（含可执行）+ store.skills（SKILL.md 驱动，toPlanningSkill 后的 prompt）
   const mentionSkills = useMemo<MentionTarget[]>(() => {
@@ -221,17 +257,42 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
     return parts.join('\n\n')
   }
 
+  /** 工具栏 @ 按钮（toggle）：光标移到末尾，弹出全量可 @ 技能面板；已弹窗时再点关闭 */
+  const openMentionPicker = () => {
+    if (mention) {
+      setMention(null)
+      return
+    }
+    const el = inputRef.current
+    if (el) {
+      el.focus()
+      const len = input.length
+      el.setSelectionRange(len, len)
+    }
+    setMention({ token: '', start: input.length, picker: true })
+    setMentionActive(0)
+  }
+
   const selectMention = (target: MentionTarget) => {
     if (!mention) return
-    const before = input.slice(0, mention.start - 1) // 含 @ 前的部分
-    const after = input.slice(mention.start + mention.token.length)
-    const next = `${before}@${target.name} ${after}`
+    let next: string
+    let pos: number
+    if (mention.picker) {
+      // 工具栏 @ 按钮呼出：直接在末尾插入 @名称
+      next = `${input}@${target.name} `
+      pos = next.length
+    } else {
+      // 行内 @token：替换光标前的 token 为 @名称
+      const before = input.slice(0, mention.start - 1) // 含 @ 前的部分
+      const after = input.slice(mention.start + mention.token.length)
+      next = `${before}@${target.name} ${after}`
+      pos = mention.start - 1 + 1 + target.name.length + 1
+    }
     setInput(next)
     setMention(null)
     requestAnimationFrame(() => {
       const el = inputRef.current
       if (el) {
-        const pos = mention.start - 1 + 1 + target.name.length + 1
         el.focus()
         el.setSelectionRange(pos, pos)
       }
@@ -240,13 +301,28 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
 
   const handleSend = () => {
     const content = input.trim()
-    if (!content) return
-    sendMessage(resolveMentions(content))
+    if (!content && attachments.length === 0) return
+    // Codex 式：附件 + 文字一起组成待发送内容，附件上下文在前、用户文字在后。
+    // 文件只是暂存（data/uploads/），尚未注册图层——需要 Agent 真正用时再按需创建。
+    const uploadParts = attachments.map(
+      (attachment) =>
+        `我上传了文件「${attachment.name}」，已暂存到工作区 ${attachment.path}（尚未注册为地图图层）。` +
+        `请先读取该文件了解数据结构；如果要用它做地图分析，请先用 register_uploaded_file 把它注册为图层，再继续：`,
+    )
+    const resolved = resolveMentions(content)
+    const parts = [...uploadParts]
+    if (resolved) parts.push(resolved)
+    sendMessage(parts.join('\n\n'))
     setInput('')
+    setAttachments([])
     setMention(null)
   }
 
-  /** 附件上传：成功 → 自动消息（带工作区路径）+ 刷新图层；不支持类型内联提示 */
+  const removeAttachment = (stagedId: string) => {
+    setAttachments((prev) => prev.filter((attachment) => attachment.stagedId !== stagedId))
+  }
+
+  /** 附件暂存：只挂到待发送附件列表（不注册图层/不上地图，无需刷新图层）；不支持类型内联提示 */
   const handleFileChosen = async (file: File | undefined) => {
     if (!file || uploading) return
     const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
@@ -260,18 +336,11 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
     setUploading(true)
     setUploadError(null)
     try {
-      const result = await uploadLayer(file)
-      const message =
-        `我上传了文件「${result.name}」并注册为图层 ${result.layer_id}（${result.feature_count} 要素，` +
-        `工作区路径 ${UPLOADED_PATH}/${result.layer_id}.json）。请先读取该图层了解数据结构，再继续：`
-      try {
-        const [fresh, geojson] = await Promise.all([fetchLayers(), fetchAllGeojson()])
-        useAppStore.setState({ layers: fresh.map(toLayer) })
-        setGeojsonCache(geojson)
-      } catch {
-        // 刷新失败保持现状，上传本身已成功
-      }
-      sendMessage(message)
+      const result = await stageUpload(file)
+      setAttachments((prev) => [
+        ...prev,
+        { stagedId: result.staged_id, name: result.original_name, path: result.path },
+      ])
     } catch (error) {
       setUploadError((error as Error).message)
     } finally {
@@ -337,9 +406,32 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
 
       {uploadError && <p className="chat-input__error">{uploadError}</p>}
 
+      {/* 待发送附件（上传后不立刻发送，点击发送才随消息一起发出） */}
+      {attachments.length > 0 && (
+        <div className="chat-attachments">
+          {attachments.map((attachment) => (
+            <span key={attachment.stagedId} className="chat-attachment">
+              <Paperclip aria-hidden="true" />
+              <span className="chat-attachment__name" title={attachment.name}>
+                {attachment.name}
+              </span>
+              <button
+                type="button"
+                className="chat-attachment__remove"
+                onClick={() => removeAttachment(attachment.stagedId)}
+                aria-label={`移除附件 ${attachment.name}`}
+                title="移除附件"
+              >
+                <X aria-hidden="true" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="chat-input">
         {mention && mentionCandidates.length > 0 && (
-          <div className="mention-pop" role="listbox" aria-label="提及技能">
+          <div className="mention-pop" ref={mentionPopRef} role="listbox" aria-label="提及技能">
             {mentionCandidates.map((skill, index) => (
               <button
                 type="button"
@@ -366,9 +458,9 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
         <textarea
           ref={inputRef}
           className="chat-input__field"
-          placeholder="请输入想研究的规划问题，例如“帮我分析这个片区公共服务有什么问题”。输入 @ 提及技能。"
+          placeholder="请输入想研究的规划问题，例如“帮我分析这个片区公共服务有什么问题”。输入 @ 或点下方 @ 可提及技能。"
           value={input}
-          rows={2}
+          rows={1}
           onChange={(e) => {
             const value = e.target.value
             setInput(value)
@@ -403,33 +495,51 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
             }
           }}
         />
-        <div className="chat-input__actions">
-          <button
-            type="button"
-            className="icon-button chat-input__attach"
-            aria-label="上传文件"
-            title="上传文件（CSV/XLSX/GeoJSON/GPKG/SHP/zip）"
-            disabled={uploading}
-            onClick={() => fileRef.current?.click()}
-          >
-            <Paperclip aria-hidden="true" />
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept={ACCEPTED}
-            className="visually-hidden"
-            onChange={(e) => void handleFileChosen(e.target.files?.[0])}
-          />
-          <button
-            type="button"
-            className="button button--primary chat-input__send"
-            onClick={handleSend}
-            disabled={!input.trim() || uploading}
-          >
-            <Send aria-hidden="true" />
-            发送
-          </button>
+        {/* Codex 式工具栏：左 链接/@，右 发送/停止 */}
+        <div className="chat-input__toolbar">
+          <div className="chat-input__toolbar-left">
+            <button
+              type="button"
+              className="chat-input__tool-button"
+              aria-label="上传文件"
+              title="上传文件（CSV/XLSX/GeoJSON/GPKG/SHP/zip）"
+              disabled={uploading}
+              onClick={() => fileRef.current?.click()}
+            >
+              <Paperclip aria-hidden="true" />
+              <span>链接</span>
+            </button>
+            <button
+              type="button"
+              ref={mentionBtnRef}
+              className="chat-input__tool-button chat-input__mention-btn"
+              aria-label="提及技能"
+              title="查看可 @ 的技能，选择后插入输入框"
+              onClick={openMentionPicker}
+            >
+              <span className="chat-input__mention-glyph" aria-hidden="true">
+                @
+              </span>
+            </button>
+          </div>
+          <div className="chat-input__toolbar-right">
+            <input
+              ref={fileRef}
+              type="file"
+              accept={ACCEPTED}
+              className="visually-hidden"
+              onChange={(e) => void handleFileChosen(e.target.files?.[0])}
+            />
+            <button
+              type="button"
+              className={`button button--primary chat-input__send${isRunning ? ' is-stop' : ''}`}
+              onClick={isRunning ? abortAgentRun : handleSend}
+              disabled={!isRunning && ((!input.trim() && attachments.length === 0) || uploading)}
+            >
+              {isRunning ? <Square aria-hidden="true" /> : <Send aria-hidden="true" />}
+              {isRunning ? '停止' : '发送'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

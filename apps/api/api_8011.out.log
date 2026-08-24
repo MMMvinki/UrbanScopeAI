@@ -1,7 +1,0 @@
-INFO:     127.0.0.1:60562 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60608 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60609 - "GET /layers HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53071 - "GET /health HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53073 - "GET / HTTP/1.1" 404 Not Found
-INFO:     127.0.0.1:53074 - "GET /layers HTTP/1.1" 200 OK
-INFO:     127.0.0.1:54098 - "GET /health HTTP/1.1" 200 OK

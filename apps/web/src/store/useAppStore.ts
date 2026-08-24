@@ -610,12 +610,34 @@ function applyEvent(agentId: string, event: AgentEvent): void {
     message.id === agentId ? reduceEvent(message, event, side) : message,
   )
   useAppStore.setState({ messages, ...side })
+  // Agent 生成图层 → 立即并图入库：地图即时显示该图层（颜色由随后的 layer_style 事件上色）
+  if (event.type === 'generated_layer') {
+    const layerId = String(event.data.layer_id ?? '')
+    if (layerId) void useAppStore.getState().addGeneratedLayer(layerId)
+  }
+}
+
+/** 当前执行中的 Agent 运行（Codex 式「停止」按钮）：abortAgentRun 据此中断 SSE 流 */
+let activeRunController: AbortController | null = null
+
+/** 停止收尾：保留已流出的 blocks，把消息落成 done（不显示「后端不可用」误报） */
+function markAgentStopped(agentId: string): void {
+  useAppStore.setState((state) => ({
+    messages: state.messages.map((m) => {
+      if (m.id !== agentId) return m
+      const blocks = m.blocks?.length
+        ? m.blocks
+        : [{ type: 'text' as const, content: '已停止执行。', id: nextBlockId() }]
+      return { ...m, status: 'done' as const, streamMode: 'done' as const, blocks }
+    }),
+  }))
 }
 
 /**
  * 执行管线：挂上计划元信息 → SSE 流式执行 → 刷新图层。
  * sendMessage（正常路径）与 skipMissing（门2「跳过该项」）共用。
  * acceptMissing：门2 授权跳过的缺失项，随请求传给后端门3 放行。
+ * signal：外部 AbortController（停止按钮），abort 时 executePlanStream 抛 AbortError 由调用方收尾。
  */
 async function runExecute(
   agentId: string,
@@ -623,6 +645,7 @@ async function runExecute(
   question: string,
   history: ChatTurn[],
   acceptMissing?: string[],
+  signal?: AbortSignal,
 ): Promise<void> {
   useAppStore.setState((state) => ({
     messages: state.messages.map((message) =>
@@ -650,7 +673,7 @@ async function runExecute(
     question,
     history,
     (event) => applyEvent(agentId, event),
-    undefined,
+    signal,
     useAppStore.getState().activeConversationId,
     acceptMissing,
   )
@@ -749,6 +772,8 @@ interface AppState {
   sendMessage: (content: string) => Promise<void>
   /** 门2「跳过该项」：带 accept_missing 直接执行暂存计划（不再重新 plan） */
   skipMissing: (agentId: string) => Promise<void>
+  /** 停止当前 Agent 运行（发送按钮切「停止」时点击；abort SSE 流，保留已流出的内容） */
+  abortAgentRun: () => void
   /** 审批一个 ASK 权限请求：POST /agent/approve（remember 时持久化规则） */
   resolveApproval: (allowed: boolean, remember: boolean) => Promise<void>
   /** 挂载时拉取后端图层与 Skill，后端未启动则保留本地演示数据 */
@@ -770,6 +795,8 @@ interface AppState {
   showOnlyLayer: (id: string) => void
   /** 彻底删除图层（后端清磁盘物化文件 + 项目 manifest）；成功后前端清理，失败抛错 */
   removeLayer: (id: string) => Promise<void>
+  /** Agent 生成图层事件到达时立即并入 store（无需等整个 run 结束），真实几何上屏 */
+  addGeneratedLayer: (layerId: string) => Promise<void>
   renameLayer: (id: string, name: string) => void
   duplicateLayer: (id: string) => void
   updateLayerStyle: (id: string, style: Partial<LayerStyle>) => void
@@ -871,6 +898,8 @@ export const useAppStore = create<AppState>((set) => ({
   },
   setDraftMessage: (content) => set({ draftMessage: content }),
   sendMessage: async (content) => {
+    const controller = new AbortController()
+    activeRunController = controller
     const userMessage: AgentMessage = { id: `m-${Date.now()}`, role: 'user', content }
     const agentId = `m-${Date.now() + 1}`
     const placeholder: AgentMessage = { id: agentId, role: 'agent', status: 'loading' }
@@ -893,7 +922,17 @@ export const useAppStore = create<AppState>((set) => ({
       // 0. 多轮上下文记忆：把既有对话作为 history 传给 Planner/Executor
       const history = buildHistory(useAppStore.getState().messages)
       // 1. Planner：动态读取当前 skill/tool，生成计划与思考过程 + 就绪检查
-      const plan = await planQuestion(content, history, useAppStore.getState().activeConversationId)
+      const plan = await planQuestion(
+        content,
+        history,
+        useAppStore.getState().activeConversationId,
+        controller.signal,
+      )
+      if (controller.signal.aborted) {
+        // 规划期用户已点「停止」：不再进入执行，直接收尾
+        markAgentStopped(agentId)
+        return
+      }
 
       // 门1：意图澄清 → 追问气泡（问题 + 选项按钮 + 可打字），不执行。
       // 后端提示词已强制「历史有追问问答对就不再追问」；这里兜底：连续 2 次仍追问
@@ -949,26 +988,33 @@ export const useAppStore = create<AppState>((set) => ({
       }
 
       // 正常：流式执行 + 刷新图层
-      await runExecute(agentId, plan, content, history)
+      await runExecute(agentId, plan, content, history, undefined, controller.signal)
     } catch (error) {
+      if (controller.signal.aborted) {
+        // 用户点「停止」：保留已流出的内容收尾为 done，不误报「后端不可用」
+        markAgentStopped(agentId)
+        return
+      }
+      // 真实失败（后端不可用等）：落成 done 并追加错误块，避免消息永远处于 streaming 卡住「停止」按钮
+      const errorBlock = {
+        type: 'text' as const,
+        content: `后端服务不可用：${(error as Error).message}。请确认 apps/api 已在 http://127.0.0.1:8011 启动。`,
+        id: nextBlockId(),
+      }
       set((state) => ({
         messages: state.messages.map((message) =>
           message.id === agentId
             ? {
                 ...message,
-                status: 'streaming',
-                streamMode: 'live',
-                blocks: [
-                  {
-                    type: 'text',
-                    content: `后端服务不可用：${(error as Error).message}。请确认 apps/api 已在 http://127.0.0.1:8011 启动。`,
-                    id: nextBlockId(),
-                  },
-                ],
+                status: 'done',
+                streamMode: 'done',
+                blocks: [...(message.blocks ?? []), errorBlock],
               }
             : message,
         ),
       }))
+    } finally {
+      if (activeRunController === controller) activeRunController = null
     }
   },
   skipMissing: async (agentId) => {
@@ -976,9 +1022,25 @@ export const useAppStore = create<AppState>((set) => ({
     const message = useAppStore.getState().messages.find((m) => m.id === agentId)
     const plan = message?.planResult
     if (!plan) return
-    const history = buildHistory(useAppStore.getState().messages)
-    const accept = [...new Set(plan.unmet_targets)]
-    await runExecute(agentId, plan, message.originalQuestion ?? plan.summary, history, accept)
+    const controller = new AbortController()
+    activeRunController = controller
+    try {
+      const history = buildHistory(useAppStore.getState().messages)
+      const accept = [...new Set(plan.unmet_targets)]
+      await runExecute(agentId, plan, message.originalQuestion ?? plan.summary, history, accept, controller.signal)
+    } catch (error) {
+      if (controller.signal.aborted) {
+        markAgentStopped(agentId)
+        return
+      }
+      throw error
+    } finally {
+      if (activeRunController === controller) activeRunController = null
+    }
+  },
+  /** 停止当前 Agent 运行（发送按钮切「停止」）：abort SSE 流，已流出的内容保留 */
+  abortAgentRun: () => {
+    activeRunController?.abort()
   },
   resolveApproval: async (allowed, remember) => {
     const pending = useAppStore.getState().pendingApproval
@@ -1208,6 +1270,33 @@ export const useAppStore = create<AppState>((set) => ({
         layerIds: group.layerIds.filter((layerId) => layerId !== id),
       })),
     }))
+  },
+  addGeneratedLayer: async (layerId) => {
+    // Agent 生成图层（GENERATED_LAYER 事件）到达时立即刷新：把新图层并入 store，
+    // 让地图立刻显示、面板立刻出现该行；颜色由随后的 layer_style 事件即时上色。
+    // 只合并目标图层，不整段替换 layers（保留用户运行中已做的显隐等本地改动）。
+    // 关键时序：先拉真实几何写入缓存，再并入 store —— 否则 getLayerGeojson 对
+    // generated 图层会 demo 兜底，真实数据上屏前闪一下假数据（诚实呈现原则）。
+    // 失败保持现状：run 结束后的整段刷新（runExecute）仍会兜底补上。
+    try {
+      const [fresh, geoOk] = await Promise.all([fetchLayers(), ensureLayerGeojson(layerId)])
+      const freshLayers = fresh.map(toLayer)
+      const target = freshLayers.find((layer) => layer.id === layerId)
+      if (!target) return
+      set((state) => {
+        const exists = state.layers.some((layer) => layer.id === layerId)
+        const layers = exists
+          ? state.layers.map((layer) => (layer.id === layerId ? target : layer))
+          : [...state.layers, target]
+        return {
+          layers,
+          layerStyles: mergeStylesFromLayers(state.layerStyles, layers),
+          ...(geoOk ? { geojsonTick: state.geojsonTick + 1 } : {}),
+        }
+      })
+    } catch {
+      // 忽略：run 结束后的整段刷新会补齐
+    }
   },
   renameLayer: (id, name) =>
     set((state) => ({

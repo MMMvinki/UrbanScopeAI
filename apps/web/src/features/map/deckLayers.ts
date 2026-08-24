@@ -182,6 +182,23 @@ function buildRasterLayer(
   ]
 }
 
+/** 坐标对是否为合理经纬度（有限且范围合法；坏几何绝不进 deck，防 invalid latitude 崩溃） */
+function isFiniteLngLat(x: number, y: number): boolean {
+  return Number.isFinite(x) && Number.isFinite(y) && x >= -180 && x <= 180 && y >= -90 && y <= 90
+}
+
+/** 递归检查几何坐标树：任一坐标对越界/非有限即视为坏几何 */
+function geometryHasValidCoords(coords: unknown): boolean {
+  if (!Array.isArray(coords)) return false
+  if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+    return isFiniteLngLat(coords[0], coords[1])
+  }
+  for (const child of coords) {
+    if (!geometryHasValidCoords(child)) return false
+  }
+  return true
+}
+
 export function buildDeckLayers(
   layers: LayerMetadata[],
   styles: Record<string, LayerStyle> = {},
@@ -191,7 +208,10 @@ export function buildDeckLayers(
     .flatMap((layer): Layer[] => {
       if (layer.kind === 'raster') return buildRasterLayer(layer, styles) as Layer[]
       const collection = getLayerGeojson(layer)
-      const features: FeatureLike[] = (collection?.features as FeatureLike[]) ?? []
+      // 坏几何（投影坐标/NaN/越界）直接丢弃：绝不喂给 deck.gl 崩地图
+      const features: FeatureLike[] = ((collection?.features as FeatureLike[]) ?? []).filter((f) =>
+        geometryHasValidCoords(f.geometry?.coordinates),
+      )
       const style = styleFor(layer, styles)
       const vv: VisualVariables | undefined = style?.visualVariables
       const graduated = style?.styleMode === 'graduated' ? vv?.graduated : undefined

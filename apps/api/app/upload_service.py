@@ -53,7 +53,8 @@ def _geojson_from_csv(path: Path) -> dict:
     if not lat_col or not lng_col:
         raise UploadError(
             f"无法自动识别经纬度列。表头：{'、'.join(headers)}"
-            "（支持 lat/latitude/y/纬度 与 lng/lon/longitude/x/经度）"
+            "（支持 lat/latitude/y/纬度 与 lng/lon/longitude/x/经度；"
+            "带前缀变体如 WGS84_Lat / GCJ02_Lng 也会自动识别）"
         )
     fc, _skipped = csv_tool._build_geojson(rows, lat_col, lng_col)
     if not fc["features"]:
@@ -132,10 +133,13 @@ def _geojson_from_gpkg(path: Path) -> dict:
     return _geojson_from_gdf(gdf, path.name)
 
 
-def ingest_upload(filename: str, content: bytes, layer_name: str | None = None) -> dict:
-    """上传 → 图层。返回 {layer_id, name, feature_count, geometry_types, crs}。"""
-    original_stem = Path(filename).stem  # 显示名取原始文件名（不含随机去重后缀）
-    path = _save_upload(filename, content)
+def _ingest_path(path: Path, name: str | None = None) -> dict:
+    """从已落盘文件解析 + 注册为地图图层。
+
+    upload（立即注册）与 register_uploaded_file 工具（Agent 按需注册）共用：
+    解析暂存/上传文件 → FeatureCollection → 注册进 DATA_REGISTRY → 物化到
+    workspace/data/layers/。返回 {layer_id, name, feature_count, geometry_types, crs}。
+    """
     suffix = path.suffix.lower()
 
     if suffix in (".csv", ".xlsx", ".tsv", ".txt"):
@@ -158,10 +162,10 @@ def ingest_upload(filename: str, content: bytes, layer_name: str | None = None) 
         raise UploadError(f"文件没有可用的几何要素：{path.name}")
 
     layer_id = clean_layer_id(path.stem)
-    name = (layer_name or original_stem).strip() or layer_id
+    layer_name = (name or path.stem).strip() or layer_id
     layer = LayerMetadata(
         id=layer_id,
-        name=name,
+        name=layer_name,
         source=LayerSource.uploaded,
         geometry=geometry_type_for(geometry_types),
         color="#0F172A",
@@ -184,8 +188,38 @@ def ingest_upload(filename: str, content: bytes, layer_name: str | None = None) 
 
     return {
         "layer_id": layer_id,
-        "name": name,
+        "name": layer_name,
         "feature_count": len(features),
         "geometry_types": sorted(geometry_types),
         "crs": "EPSG:4326",
+    }
+
+
+def ingest_upload(filename: str, content: bytes, layer_name: str | None = None) -> dict:
+    """上传 → 立即注册图层（图层面板「添加数据」入口）。"""
+    original_stem = Path(filename).stem  # 显示名取原始文件名（不含随机去重后缀）
+    path = _save_upload(filename, content)
+    return _ingest_path(path, name=layer_name or original_stem)
+
+
+def stage_upload(filename: str, content: bytes) -> dict:
+    """仅暂存文件到工作区 uploads 目录：不解析、不注册图层、不上地图。
+
+    Agent 对话框上传走这里：只挂附件 chip，等 Agent 真正要用时再通过
+    register_uploaded_file 工具按需解析并注册为图层。返回暂存引用
+    {staged_id, original_name, path, size}，path 为 workspace 相对路径。
+
+    同名重传覆盖原暂存文件（而非 _save_upload 的去重后缀），保证图层 id/名称
+    干净（oct_poi 而不是 oct_poi_ab12cd）；已注册的同名图层由 register_generated
+    原地更新几何，不产生重名图层。
+    """
+    safe = Path(filename).name  # 只保留文件名，剥离任何路径成分
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    path = _UPLOAD_DIR / safe
+    path.write_bytes(content)
+    return {
+        "staged_id": path.stem,
+        "original_name": Path(filename).name,
+        "path": f"data/uploads/{path.name}",
+        "size": path.stat().st_size,
     }

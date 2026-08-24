@@ -54,6 +54,81 @@ TOOLS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="isochrone",
+        category="analysis",
+        description=(
+            "生成等时圈（按真实路网从中心点 N 分钟可达范围，Mapbox Isochrone API）。"
+            "一次调用生成【一个图层】：把要分析的全部中心点一次性传进 centers，"
+            "如用 query_features 从地铁站/POI 图层取区域内所有站点坐标组成 [[经度, 纬度, '站点名'], ...]，"
+            "所有站点×各分钟档的等时圈合并到同一图层；严禁只传一个站或拆成多次调用。"
+            "默认 merge=true 融合：同一分钟档的多边形取并集——一个时间档一个融合形状"
+            "（不再是一站一个圈），多档时相邻档相减成环带（5分钟=中心、15分钟=最外）；"
+            "merge=false 才保留一站一圈。"
+            "坐标必须是 WGS84 经纬度（勿臆造，从已有图层查真实坐标）；minutes 传 1~4 个整数分钟；"
+            "profile 可选 walking（步行，默认）/driving（驾车）/cycling（骑行）/driving-traffic（实时驾车）。"
+            "默认按 contour 分钟统一配色（同时间档同色：单档整层一色、多档分钟越大颜色越深）；"
+            "style_by=station 可改为按站点分色。"
+            "生成后图层自动上地图，可用于服务范围/15 分钟生活圈等分析。"
+        ),
+        status="ready",
+        parameters={
+            "centers": "中心点数组 [[经度, 纬度, 站点名], ...]，一次传全部中心点（一次调用=一个图层）",
+            "center": "可选，单中心点 [经度, 纬度]（多中心时用 centers）",
+            "minutes": "分钟数组 1~4 个（如 [5,10,15]）",
+            "profile": "出行方式：walking/driving/cycling/driving-traffic，默认 walking",
+            "name": "可选，图层基础名",
+            "palette": "可选，配色（单档可传 #hex 色；多档默认蓝梯度；station 默认 category10）",
+            "style_by": "可选，contour 按分钟统一配色（默认）/ station 按站点分色",
+            "merge": "可选，默认 true 融合（同档多边形并集、多档成环带）；false 保留一站一圈",
+        },
+        json_schema={
+            "type": "object",
+            "properties": {
+                "centers": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {},
+                        "minItems": 2,
+                        "description": "[经度, 纬度, 可选站点名]",
+                    },
+                    "description": "中心点数组，一次传全部（如区域内所有地铁站）：[[经度, 纬度, '站点名'], ...]",
+                },
+                "center": {
+                    "type": "array",
+                    "items": {"type": "number"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": "单中心点 [经度, 纬度]，WGS84 坐标系（多中心请用 centers）",
+                },
+                "minutes": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 1, "maximum": 120},
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "description": "等时圈分钟档（1~4 个，如 [5, 10, 15]）",
+                },
+                "profile": {
+                    "type": "string",
+                    "enum": ["walking", "driving", "cycling", "driving-traffic"],
+                    "description": "出行方式，默认 walking",
+                },
+                "name": {"type": "string", "description": "图层基础名（如「华侨城地铁站步行15分钟」）"},
+                "palette": {"type": "string", "description": "分类配色名，默认 blues 单中心 / category10 多中心"},
+                "style_by": {
+                    "type": "string",
+                    "enum": ["contour", "station"],
+                    "description": "contour=按分钟分色，station=按站点分色（默认自动）",
+                },
+                "merge": {
+                    "type": "boolean",
+                    "description": "默认 true：融合（同档多边形并集、多档相减成环带）；false 保留一站一圈",
+                },
+            },
+            "required": ["centers", "minutes"],
+        },
+    ),
+    ToolSpec(
         name="spatial_join",
         category="analysis",
         description="空间叠加两个图层，统计空间关系占比。",
@@ -108,6 +183,41 @@ TOOLS: list[ToolSpec] = [
                 "population_layer_id": {"type": "string", "description": "人口图层 id"},
             },
             "required": ["facility_layer_id", "population_layer_id"],
+        },
+    ),
+    ToolSpec(
+        name="bivariate_moran",
+        category="analysis",
+        description=(
+            "双变量空间自相关（双变量 Moran's I + LISA）：衡量两个变量在空间上的协同聚集/排斥。"
+            "模式 A：传 layer_id + x_field + y_field（同一多边形图层两个数值字段，用邻接权重；"
+            "点图层用 KNN）。模式 B：传 x_layer_id + y_layer_id（两个点图层，自动渔网聚合后计算，"
+            "cell_size_m 控制格网）。输出带 lisa_cluster（HH/LH/LL/HL/NS）的生成图层并自动配色，"
+            "返回全局 Moran's I 与伪 p 值。"
+        ),
+        status="ready",
+        parameters={
+            "layer_id": "多边形/点图层 id（模式 A）",
+            "x_field": "X 数值字段名（模式 A）",
+            "y_field": "Y 数值字段名（模式 A）",
+            "x_layer_id": "X 点图层 id（模式 B，两图层自动渔网）",
+            "y_layer_id": "Y 点图层 id（模式 B）",
+            "cell_size_m": "渔网格宽米（模式 B，默认 300，下限 100）",
+            "permutations": "置换次数（默认 999）",
+            "name": "图层基础名（可选）",
+        },
+        json_schema={
+            "type": "object",
+            "properties": {
+                "layer_id": {"type": "string", "description": "多边形/点图层 id（模式 A）"},
+                "x_field": {"type": "string", "description": "X 数值字段名（模式 A）"},
+                "y_field": {"type": "string", "description": "Y 数值字段名（模式 A）"},
+                "x_layer_id": {"type": "string", "description": "X 点图层 id（模式 B）"},
+                "y_layer_id": {"type": "string", "description": "Y 点图层 id（模式 B）"},
+                "cell_size_m": {"type": "integer", "description": "渔网格宽米（模式 B，默认 300）"},
+                "permutations": {"type": "integer", "description": "置换次数（默认 999）"},
+                "name": {"type": "string", "description": "图层基础名"},
+            },
         },
     ),
     ToolSpec(
@@ -273,6 +383,30 @@ TOOLS: list[ToolSpec] = [
             "properties": {
                 "file_path": {"type": "string", "description": "要发布的 GeoJSON 文件路径，如 .workdir/osm/download_bbox_xxx.geojson"},
                 "layer_id": {"type": "string", "description": "可选：目标图层 id"},
+                "name": {"type": "string", "description": "可选：图层显示名称"},
+            },
+            "required": ["file_path"],
+        },
+    ),
+    ToolSpec(
+        name="register_uploaded_file",
+        category="data",
+        description=(
+            "把 Agent 对话框上传并暂存在工作区的文件（data/uploads/ 下，如 data/uploads/xxx.csv）"
+            "解析并注册为地图图层，地图立即显示。用户上传后文件默认不自动上地图，"
+            "需要真正用它做地图分析时先调用本工具；支持 CSV/Excel/GeoJSON/SHP(zip)/GPKG，"
+            "自动识别经纬度列。"
+        ),
+        display_description="把暂存的上传文件（CSV/GeoJSON/SHP 等）注册为地图图层。",
+        status="ready",
+        parameters={
+            "file_path": "暂存的上传文件路径（data/uploads/ 下，相对或绝对）",
+            "name": "可选：图层显示名（默认取文件名）",
+        },
+        json_schema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "暂存上传文件路径，如 data/uploads/oct_poi.csv"},
                 "name": {"type": "string", "description": "可选：图层显示名称"},
             },
             "required": ["file_path"],

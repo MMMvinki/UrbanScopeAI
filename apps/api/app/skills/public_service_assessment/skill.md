@@ -18,9 +18,10 @@ outputs:
   - 设施短板清单
 plan:
   operation: supply_demand
-  targets:
-    - schools
-    - culture_centers
+  # targets 留空：由 Planner/Executor 按当前项目真实图层动态选取（硬编码
+  # schools/culture_centers 在多数项目解析不到，会顶掉 LLM 选的真实 POI 图层）。
+  targets: []
+  target_distances: {}
 indicators:
   - name: 学校供需匹配
     data: 人口 + 学校设施

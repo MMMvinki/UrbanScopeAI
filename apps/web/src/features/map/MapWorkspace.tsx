@@ -1,17 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
 import { AttributionControl, Map as MapLibreMap, NavigationControl } from 'maplibre-gl'
+import type { StyleSpecification } from 'maplibre-gl'
 import { MapboxOverlay } from '@deck.gl/mapbox'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import { Layers } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import {
   BASEMAPS,
+  DEFAULT_BASEMAP_ID,
   MAP_CENTER,
   buildBasemapStyle,
   featureCollectionBounds,
   getLayerGeojson,
+  isValidLngLatBounds,
   mapLayerIdFor,
   sourceIdFor,
+  stripBasemapLabels,
   styleSpecFor,
 } from './mapLayers'
 import { buildDeckLayers } from './deckLayers'
@@ -23,6 +27,13 @@ import { MapSchematic } from './MapSchematic'
  * 因此必须在构造前探测，并在构造后立即检查 painter 状态。
  */
 let cachedWebgl: boolean | null = null
+
+/**
+ * Mapbox 底图 public token（pk. 开头）。构建期常量：配域名白名单后放前端是 Mapbox 标准做法；
+ * 服务端调用如 isochrone 的 token 另走 apps/api/.env，两者不是一回事。
+ * 未配置时 Mapbox 底图不会出现在列表，地图回退免 token 的 OpenFreeMap 样式。
+ */
+const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined
 
 function webgl2Available(): boolean {
   if (cachedWebgl !== null) return cachedWebgl
@@ -56,6 +67,10 @@ export function MapWorkspace() {
   // 底图切换：setStyle 后 style.load 触发递增，驱动数据图层重新同步
   // basemapId 提升到 store：工具栏下拉与 Agent set_basemap 事件共用同一状态
   const [styleTick, setStyleTick] = useState(0)
+  // 底图文字标注开关（矢量底图带大量 POI/道路标注，出图分析时常要干净底图）
+  const [showLabels, setShowLabels] = useState(true)
+  // 3D 建筑开关：OpenFreeMap planet 矢量建筑 fill-extrusion 挤出，叠加在任意底图上
+  const [show3D, setShow3D] = useState(false)
 
   const layers = useAppStore((s) => s.layers)
   const layerStyles = useAppStore((s) => s.layerStyles)
@@ -63,6 +78,15 @@ export function MapWorkspace() {
   const focusTarget = useAppStore((s) => s.focusTarget)
   const basemapId = useAppStore((s) => s.basemapId)
   const setBasemapId = useAppStore((s) => s.setBasemapId)
+
+  // 当前生效底图：Mapbox 底图但没配 token → 回退默认（避免无 token 的栅格 URL 白图）
+  const activeBasemap = BASEMAPS.find((b) => b.id === basemapId) ?? BASEMAPS[0]
+  const effectiveBasemap =
+    activeBasemap.mapboxStyle && !mapboxToken
+      ? (BASEMAPS.find((b) => b.id === DEFAULT_BASEMAP_ID) ?? BASEMAPS[0])
+      : activeBasemap
+  // 标注开关只对矢量底图有效（OpenFreeMap）；Mapbox/Esri 栅格底图标注内嵌/不存在
+  const labelsCapable = Boolean(effectiveBasemap.styleUrl)
 
   // 初始化地图（组件卸载时销毁，StrictMode 下安全）
   useEffect(() => {
@@ -213,25 +237,133 @@ export function MapWorkspace() {
     const map = mapRef.current
     if (!loaded || !map?.painter) return
     const target =
-      layers.find((layer) => layer.id === 'study_area') ?? layers.find((layer) => layer.bbox?.length === 4)
+      layers.find((layer) => layer.id === 'study_area') ??
+      layers.find((layer) => isValidLngLatBounds(layer.bbox))
     if (!target) return
     const bbox = target.bbox
-    if (bbox?.length === 4) {
+    if (isValidLngLatBounds(bbox) && bbox) {
       map.fitBounds([[bbox[0], bbox[1]], [bbox[2], bbox[3]]], { padding: 40, duration: 0 })
     } else {
       map.fitBounds(featureCollectionBounds(getLayerGeojson(target)), { padding: 40, duration: 0 })
     }
   }, [loaded]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 底图切换：setStyle 会清空 MapLibre 内置数据图层，等 style.load 后递增 styleTick 重同步
-  // （deck.gl 路径由 MapboxOverlay 在 interleaved 模式下自动重注入，无需手动处理）
+  // 底图切换 + 标注开关：setStyle 会清空 MapLibre 内置数据图层，等 style.load 后递增
+  // styleTick 重同步（deck.gl 路径由 MapboxOverlay 在 interleaved 模式下自动重注入）。
+  // Mapbox 底图是内联栅格样式（typeof === 'object'）直接应用；OpenFreeMap 矢量是 URL，
+  // showLabels=false 时拉取样式并剥掉 symbol（文字/图标）图层再应用。
   useEffect(() => {
     const map = mapRef.current
     if (!loaded || !map?.painter) return
-    const basemap = BASEMAPS.find((b) => b.id === basemapId) ?? BASEMAPS[0]
-    map.setStyle(buildBasemapStyle(basemap))
-    map.once('style.load', () => setStyleTick((tick) => tick + 1))
-  }, [basemapId]) // eslint-disable-line react-hooks/exhaustive-deps
+    const styleInput = buildBasemapStyle(effectiveBasemap) // string（矢量样式 URL）| StyleSpecification（栅格/内联）
+    let cancelled = false
+    const applyStyle = (target: string | StyleSpecification) => {
+      map.setStyle(target)
+      map.once('style.load', () => setStyleTick((tick) => tick + 1))
+    }
+    if (showLabels || typeof styleInput !== 'string') {
+      applyStyle(styleInput)
+      return () => {
+        cancelled = true
+      }
+    }
+    // 隐藏标注：拉取矢量样式 JSON → 剥掉 symbol 图层 → 应用修改后的样式
+    fetch(styleInput)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (cancelled) return
+        if (json && typeof json === 'object' && Array.isArray((json as StyleSpecification).layers)) {
+          applyStyle(stripBasemapLabels(json as StyleSpecification))
+        } else {
+          applyStyle(styleInput)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) applyStyle(styleInput)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [basemapId, showLabels]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 3D 建筑图层：OpenFreeMap planet 矢量源（building source-layer，含 render_height/colour），
+  // MapLibre fill-extrusion 原生挤出。每次底图 setStyle 会清空 MapLibre 图层，靠 styleTick 递增重建。
+  // 渲染层级：MapLibre 原生层在 deck.gl 数据图层之下（数据图层保持可见），建筑作为底图语境。
+  useEffect(() => {
+    const map = mapRef.current
+    if (!loaded || !map?.painter) return
+    if (!show3D) {
+      if (map.getLayer('buildings-3d')) map.removeLayer('buildings-3d')
+      if (map.getSource('buildings')) map.removeSource('buildings')
+      return
+    }
+    // 样式切换瞬间可能未就绪：等 style.load 递增 styleTick 后由本 effect 重建
+    if (!map.isStyleLoaded()) return
+    if (!map.getSource('buildings')) {
+      map.addSource('buildings', { type: 'vector', url: 'https://tiles.openfreemap.org/planet' })
+    }
+    if (!map.getLayer('buildings-3d')) {
+      map.addLayer({
+        id: 'buildings-3d',
+        source: 'buildings',
+        'source-layer': 'building',
+        type: 'fill-extrusion',
+        minzoom: 14,
+        filter: ['!=', ['get', 'hide_3d'], true],
+        paint: {
+          'fill-extrusion-color': '#7fb3d9',
+          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 5],
+          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
+          'fill-extrusion-opacity': 0.75,
+        },
+      })
+    }
+  }, [loaded, styleTick, show3D])
+
+  // 3D 轨道旋转：按住鼠标中键拖拽，绕视图中心旋转视角。
+  // 横向拖 = 旋转朝向（bearing），纵向拖 = 俯仰角（pitch），类似 SketchUp / GIS 轨道视图。
+  // capture 阶段监听，抢在 deck.gl 事件之前处理；中键默认不触发 MapLibre 任何内置手势，互不冲突。
+  useEffect(() => {
+    const map = mapRef.current
+    if (!loaded || !map?.painter) return
+    map.setMaxPitch(85) // 放开俯仰上限，配合轨道旋转做真 3D 观察
+
+    const container = map.getCanvasContainer()
+    let start: { x: number; y: number } | null = null
+    let startBearing = 0
+    let startPitch = 0
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button !== 1) return // 仅鼠标中键
+      e.preventDefault() // 阻止浏览器中键自动滚动
+      start = { x: e.clientX, y: e.clientY }
+      startBearing = map.getBearing()
+      startPitch = map.getPitch()
+      container.style.cursor = 'grabbing'
+    }
+    const onMouseMove = (e: MouseEvent) => {
+      if (!start) return
+      const dx = e.clientX - start.x
+      const dy = e.clientY - start.y
+      map.setBearing(startBearing - dx * 0.3)
+      map.setPitch(Math.min(Math.max(startPitch + dy * 0.2, 0), 85))
+    }
+    const onMouseUp = () => {
+      if (!start) return
+      start = null
+      container.style.cursor = ''
+    }
+
+    container.addEventListener('mousedown', onMouseDown, true)
+    window.addEventListener('mousemove', onMouseMove)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => {
+      container.removeEventListener('mousedown', onMouseDown, true)
+      window.removeEventListener('mousemove', onMouseMove)
+      window.removeEventListener('mouseup', onMouseUp)
+      container.style.cursor = ''
+    }
+  }, [loaded])
 
   // deck.gl 数据图层：deckActive 时接管数据图层渲染（interleaved）。
   // geojsonTick：平台数据惰性几何拉取完成时自增，重跑 buildDeckLayers 让新几何上屏。
@@ -301,7 +433,7 @@ export function MapWorkspace() {
     const layer = layers.find((item) => item.id === focusTarget.layerId)
     if (!map?.painter || !layer) return
     const bbox = layer.bbox
-    if (bbox?.length === 4) {
+    if (isValidLngLatBounds(bbox) && bbox) {
       const bounds = map.getBounds()
       const inView =
         bounds.getWest() <= bbox[2] &&
@@ -327,21 +459,47 @@ export function MapWorkspace() {
           <Layers aria-hidden="true" />
           地图图层
         </span>
-        <label className="map-toolbar__basemap">
-          <span className="map-toolbar__basemap-label">底图</span>
-          <select
-            className="map-toolbar__basemap-select"
-            value={basemapId}
-            onChange={(event) => setBasemapId(event.target.value)}
-            aria-label="切换地图底图"
-          >
-            {BASEMAPS.map((basemap) => (
-              <option key={basemap.id} value={basemap.id}>
-                {basemap.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <span className="map-toolbar__controls">
+          <label className="map-toolbar__basemap">
+            <span className="map-toolbar__basemap-label">底图</span>
+            <select
+              className="map-toolbar__basemap-select"
+              value={basemapId}
+              onChange={(event) => setBasemapId(event.target.value)}
+              aria-label="切换地图底图"
+            >
+              {BASEMAPS.filter((basemap) => !basemap.mapboxStyle || mapboxToken).map((basemap) => (
+                <option key={basemap.id} value={basemap.id}>
+                  {basemap.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {labelsCapable && (
+            <label className="map-toolbar__labels">
+              <input
+                type="checkbox"
+                checked={showLabels}
+                onChange={(event) => setShowLabels(event.target.checked)}
+                aria-label="显示底图文字标注"
+              />
+              标注
+            </label>
+          )}
+          <label className="map-toolbar__labels">
+            <input
+              type="checkbox"
+              checked={show3D}
+              onChange={(event) => {
+                setShow3D(event.target.checked)
+                // 俯视时挤出不可见，开 3D 时给俯仰角让建筑立起来
+                mapRef.current?.easeTo({ pitch: event.target.checked ? 50 : 0, duration: 700 })
+              }}
+              aria-label="3D 建筑显示"
+            />
+            3D建筑
+          </label>
+        </span>
         <span className="map-toolbar__hint">
           {visibleCount}/{layers.length} 个图层可见 · 在「数据」面板切换
         </span>

@@ -27,6 +27,116 @@ _OPERATIONS = ("coverage", "overlay", "nearest_distance", "density", "kernel_den
 _KNOWN_DATA_LABELS = {"乱停乱放", "道路网络", "公共服务设施", "街区边界"}
 
 
+def _question_hits_skill(question: str, skill) -> bool:
+    """问题原文是否命中 skill 的某个关键词（「关键词合同」）。
+
+    方法论技能只有问题确实包含其（已收窄的）关键词才驱动，防止 LLM 把工具级请求
+    （等时圈/isochrone 等）误归为 skill、在计划头部挂无关 get_skill。
+    """
+    q = question.lower()
+    return any(kw and kw.lower() in q for kw in getattr(skill, "keywords", ()))
+
+
+# ── 解释工具原理：确定性兜底（LLM 偶发把问题复述当 chat summary，见 _explain_for_question）──
+
+# 原理/用法类问题关键词：命中才可能触发确定性解释
+_EXPLAIN_KEYWORDS = (
+    "原理", "怎么实现", "如何实现", "怎么工作", "如何工作", "是怎么算的", "怎么算的",
+    "是什么", "怎么用", "如何用", "有什么用", "作用", "干嘛", "干吗", "咋用",
+)
+
+# 工具中文别名：问题里出现即视为提及该工具（tool.name 本身也参与匹配）
+_TOOL_ALIASES: dict[str, list[str]] = {
+    "coverage": ["覆盖率", "覆盖范围", "服务范围"],
+    "spatial_join": ["空间叠加", "叠加"],
+    "nearest_distance": ["最近距离"],
+    "density": ["密度分析", "密度指数"],
+    "kernel_density": ["核密度"],
+    "supply_demand": ["供需匹配", "供需"],
+    "isochrone": ["等时圈"],
+    "statistics": ["统计指标", "指标汇总"],
+    "spatial_clip": ["裁剪", "clip"],
+    "buffer": ["缓冲区", "缓冲"],
+}
+
+# 常见分析工具的「原理」扩充说明（比 registry 一行描述更能回答"实现原理"）
+_TOOL_PRINCIPLE: dict[str, str] = {
+    "spatial_join": "通过空间拓扑关系（相交/包含/相邻）把两个图层的要素关联起来，统计目标图层要素落在叠加图层各要素内/上的数量与占比，得到两个图层在空间上的重叠分布。",
+    "supply_demand": "用设施供给量（设施点数量、服务半径覆盖面积）与人口需求量（片区人口数/密度）的比值计算供需匹配满足度，值越高代表设施相对人口越充足，越低代表越紧缺。",
+    "coverage": "以设施点为圆心按服务半径做真实缓冲区（米制 buffer），统计该缓冲区内覆盖到的目标要素数量与占比，衡量设施的几何可达覆盖。",
+    "kernel_density": "对点要素做核密度估计，在每个空间位置上按带宽加权累计邻近点的贡献，生成连续的密度面（网格），反映点的聚集强度分布。",
+    "nearest_distance": "计算目标图层每个要素到最近参考设施（POI/站点等）的直线距离，汇总平均距离/最近距离，衡量目标与设施的邻近程度。",
+    "density": "计算图层要素的空间密度指数（单位面积内要素数量），是一个汇总数值而非密度分布面。",
+    "isochrone": "按真实路网（Mapbox Isochrone API）计算从中心点步行/驾车/骑行 N 分钟内可到达的区域，比直线缓冲更真实，输出按分钟分色的可达多边形。",
+}
+
+
+def _mentioned_tools(text: str) -> list:
+    """文本里提到的工具：英文名或中文别名命中即算（保持 TOOLS 顺序去重）。"""
+    q = text.lower()
+    hits: list = []
+    for tool in TOOLS:
+        if tool.status.value != "ready":
+            continue
+        aliases = _TOOL_ALIASES.get(tool.name, []) + [tool.name]
+        if any(name and name.lower() in q for name in aliases):
+            if tool.name not in {h.name for h in hits}:
+                hits.append(tool)
+    return hits
+
+
+def _build_tool_explain(tools: list) -> str:
+    """从工具注册表组装确定性解释：作用（原理优先）+ 参数。"""
+    lines: list[str] = []
+    for tool in tools:
+        principle = _TOOL_PRINCIPLE.get(tool.name) or (tool.description or "")
+        lines.append(f"【{tool.name}】{principle}")
+        params = tool.parameters or {}
+        if params:
+            lines.append("参数：" + "、".join(f"{k}（{v}）" for k, v in params.items()))
+    return "\n".join(lines)
+
+
+_RESTATEMENT_RE = re.compile(r"^(解释|说明|讲|请解释|请说明|帮我解释|帮我说明|帮我讲|可以解释|能否解释|介绍一下)")
+
+
+def _is_degenerate_summary(question: str, summary: str) -> bool:
+    """chat summary 是否退化（只是复述问题/太短）：退化才用确定性解释覆盖。"""
+    s = summary.strip()
+    if not s:
+        return True
+    if _RESTATEMENT_RE.match(s) and len(s) < 60:
+        return True
+
+    def _norm(t: str) -> str:
+        return re.sub(r"[^\w一-鿿]", "", t).lower()
+
+    ns, nq = _norm(s), _norm(question)
+    if not ns:
+        return True
+    # summary 与问题几乎一样（去掉"解释/说明"前缀后相同）
+    stripped = _RESTATEMENT_RE.sub("", s)
+    return _norm(stripped) == nq or nq and (nq in ns or ns in nq)
+
+
+def _explain_for_question(question: str, history: list[dict] | None) -> str | None:
+    """用户问某工具/操作原理时，从注册表确定性生成解释；命中不了返回 None。
+
+    扫 question + 最近 2 条 user 轮（覆盖「解释呀」这类不带工具名的追问），
+    不扫全部历史防跨轮 bleed。返回的解释只用于覆盖「退化」的 chat summary。
+    """
+    haystack = question
+    for turn in (history or [])[-4:]:
+        if turn.get("role") == "user" and turn.get("content"):
+            haystack += "\n" + str(turn["content"])
+    if not any(k in haystack for k in _EXPLAIN_KEYWORDS):
+        return None
+    tools = _mentioned_tools(haystack)
+    if not tools:
+        return None
+    return _build_tool_explain(tools)
+
+
 def _skill_lines() -> list[str]:
     """动态 skill 清单：只注入触发词（name + description），不注入方法论全文。
 
@@ -130,6 +240,7 @@ def _system_prompt(conversation_id: str | None = None) -> str:
         "- plan 的每一步尽量关联【可用工具】里的一个 tool，无法映射的步骤 tool 用 null；",
         "- 只有问题是纯闲聊 / 问候 / 询问平台能力（如“你好”“你能做什么”）而非空间分析任务时，operation 才用 chat：",
         '  targets=[], required_data=[], plan=[], intent_id="chat"，summary 写一句自然的中文回复（如自我介绍 + 能做的分析）；',
+        "- 【解释工具原理】：用户询问某个具体分析工具/操作的原理、实现方式或用法（如“空间叠加怎么实现”“核密度是什么”）时仍用 chat，但 summary 必须直接给出对该工具的完整解释——它做什么、输入什么参数、大致如何计算——可引用【可用工具】里该工具的 description 与 parameters。绝不允许把问题复述一遍当作 summary；",
         "- 绝大多数规划问题都应落到具体分析操作，chat 仅在明显非分析类对话时使用；",
         "- 【追问】：只有**用户自己没把意图说清楚**（如没指定分析片区 / 关注维度 / 具体对象）时才输出顶层 \"clarify\"（question 一句话追问，choices 给 2~4 个可能的理解，needs 说明缺什么信息）。一旦输出 clarify，其余字段全部填空（targets/plan/required_data 留空数组，operation 留空字符串）；不要一不确定就 clarify，多数问题可直接规划；",
         "- 【数据缺失 ≠ 追问】：目标对象在【当前项目图层】里没有对应图层（如用户要“人群画像”但无人口数据）**不是**意图模糊，此时**不得输出 clarify**——照常输出正式计划，把缺失对象原文写进 targets/required_data（后端会提示缺失，由用户选择跳过或补数据）；绝对不要在 clarify/choices 里给“用其他数据源/POI 间接推断”之类的替代方案；",
@@ -296,10 +407,17 @@ def _normalize(question: str, raw: dict, history: list[dict] | None = None) -> P
 
     # 闲聊：不抽取图层/操作，直接返回一段回复文本
     if operation == "chat":
+        summary = str(raw.get("summary") or "").strip() or (
+            "你好，我是 UrbanScope 的空间分析助手。你可以让我对当前片区做城市体检、设施覆盖、人口密度等空间分析。"
+        )
+        # 「问工具原理」兜底：LLM 偶发把问题复述当 summary（用户看到"不解释"），
+        # 命中工具且 summary 退化时用注册表确定性解释覆盖。
+        explain = _explain_for_question(question, history)
+        if explain and _is_degenerate_summary(question, summary):
+            summary = explain
         return PlanResult(
             intent_id="chat",
-            summary=str(raw.get("summary") or "").strip()
-            or "你好，我是 UrbanScope 的空间分析助手。你可以让我对当前片区做城市体检、设施覆盖、人口密度等空间分析。",
+            summary=summary,
             thinking=thinking or "用户问题属于闲聊/询问能力，不触发空间分析。",
             operation="chat",
             targets=[],
@@ -359,37 +477,66 @@ def _normalize(question: str, raw: dict, history: list[dict] | None = None) -> P
 
     required = _coerce_required(raw.get("required_data"), targets, unmet)
 
-    # SKILL.md 驱动 Skill 命中（渐进披露）：intent_id 直接命中，或 question+history 命中其
-    # 关键词（LLM 可能把 intent_id 写成 skill_creator_xx 而非规范 id）时，强制走 skill
-    # 流程：plan 第一步固定 get_skill 读取 SKILL.md 方法论正文（body 按需加载），后续由
-    # Executor 按方法论引导（澄清/落盘/校验）；不落入通用分析模板。
+    # SKILL.md 驱动 Skill 命中（渐进披露），按「关键词合同」：
+    # 方法论技能只有问题原文真的包含其（已收窄的）关键词才驱动。等时圈/isochrone 等工具级
+    # 请求不含 生活圈/体检/评估 框架词 → 绝不挂方法论技能，直接走通用计划调工具；LLM 偶发把
+    # 这类请求误归为 skill（如「地铁站等时圈」→ 公共服务设施评估）时，关键词不中即降级。
+    # 两种分支：
+    # 1) skill-creator（技能创建任务）：plan 第一步固定 get_skill 读取 SKILL.md 方法论正文，
+    #    清空 targets/required，后续由 Executor 按方法论引导（澄清/落盘/校验）；
+    # 2) 分析方法论技能（15 分钟生活圈 / 城市体检 / 公共服务评估等）：保留 LLM 计划与
+    #    targets/required（缺数据闸门不能丢），只在计划头部补 get_skill 步骤让 Executor
+    #    加载方法论正文——计划卡展示完整分析路径，而非单步「读取方法论」。
     prompt_skill = get_skill(intent_id)
-    if not (prompt_skill is not None and getattr(prompt_skill, "kind", None) == "prompt"):
-        haystack = " ".join(
-            [str(h.get("content") or "") for h in (history or [])] + [question, summary]
-        ).lower()
+    if prompt_skill is not None and getattr(prompt_skill, "kind", None) == "prompt":
+        if prompt_skill.id != "skill-creator" and not _question_hits_skill(question, prompt_skill):
+            prompt_skill = None
+    if prompt_skill is None:
+        # 关键词兜底：只在当前问题原文匹配（不扫 history/summary，防跨轮 bleed 与 LLM 复述
+        # 误命中），最长关键词胜出。skill-creator 的创建词（创建/沉淀/新技能…）同样参与。
         best, best_len = None, 0
+        q = question.lower()
         for candidate in SKILLS:
             if getattr(candidate, "kind", None) != "prompt":
                 continue
             for kw in candidate.keywords:
-                if kw and kw.lower() in haystack and len(kw) > best_len:
+                if kw and kw.lower() in q and len(kw) > best_len:
                     best, best_len = candidate, len(kw)
         prompt_skill = best
     if prompt_skill is not None:
-        plan = [
-            PlanStep(
-                step_id="s1",
-                label=f"读取「{prompt_skill.name}」方法论",
-                tool="get_skill",
-                detail=f"读取 {prompt_skill.id} 的 SKILL.md 方法论正文，按方法论引导创建/沉淀技能",
-            )
-        ]
         intent_id = prompt_skill.id
-        targets, unmet = [], []
-        required = []
-        if not thinking:
-            thinking = f"命中「{prompt_skill.name}」技能方法论，plan 第一步 get_skill 读取 SKILL.md 正文（渐进披露），由执行器按方法论引导。"
+        if prompt_skill.id == "skill-creator":
+            # 创建任务：方法论引导，不产出通用分析计划
+            plan = [
+                PlanStep(
+                    step_id="s1",
+                    label=f"读取「{prompt_skill.name}」方法论",
+                    tool="get_skill",
+                    detail=f"读取 {prompt_skill.id} 的 SKILL.md 方法论正文，按方法论引导创建/沉淀技能",
+                )
+            ]
+            targets, unmet = [], []
+            required = []
+            if not thinking:
+                thinking = f"命中「{prompt_skill.name}」技能方法论，plan 第一步 get_skill 读取 SKILL.md 正文（渐进披露），由执行器按方法论引导。"
+        else:
+            # 分析方法论技能：保留 LLM 计划与 targets/required，头部补 get_skill 步骤。
+            if not any(step.tool == "get_skill" for step in plan):
+                plan = [
+                    PlanStep(
+                        step_id="s1",
+                        label=f"读取「{prompt_skill.name}」方法论",
+                        tool="get_skill",
+                        detail=f"读取 {prompt_skill.id} 的 SKILL.md 方法论正文，按方法论引导执行",
+                    )
+                ] + [
+                    PlanStep(
+                        step_id=f"s{i + 2}", label=step.label, tool=step.tool, detail=step.detail
+                    )
+                    for i, step in enumerate(plan)
+                ]
+            if not thinking:
+                thinking = f"命中「{prompt_skill.name}」分析方法论，plan 头部 get_skill 加载方法论正文，按方法论执行。"
 
     return PlanResult(
         intent_id=intent_id,

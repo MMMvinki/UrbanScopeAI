@@ -5,6 +5,7 @@ import { LeftNav } from './LeftNav'
 import { TopBar } from './TopBar'
 import { LiquidOrb } from './LiquidOrb'
 import { MapWorkspace } from '../features/map/MapWorkspace'
+import { MapErrorBoundary } from './MapErrorBoundary'
 import { useAppStore } from '../store/useAppStore'
 import type { NavKey } from '../store/useAppStore'
 
@@ -124,7 +125,9 @@ export function AppShell({
               {leftPanel}
             </section>
           )}
-          <MapWorkspace />
+          <MapErrorBoundary>
+            <MapWorkspace />
+          </MapErrorBoundary>
           {agentOpen && <div className="agent-float">{agentPanel}</div>}
           {!agentOpen && (
             <div

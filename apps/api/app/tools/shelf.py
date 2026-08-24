@@ -56,6 +56,7 @@ TOOL_PROMPT_HINTS: dict[str, str] = {
     "remove_layer": "帮我把某个图层从地图上移除。",
     "set_layer_order": "帮我调整地图图层的显示顺序。",
     "register_layer": "帮我把工作区里下载好的数据文件发布成地图图层。",
+    "register_uploaded_file": "帮我把我上传并暂存的文件注册成地图图层。",
     "csv_to_geojson": "帮我把带经纬度的表格数据转换成地图数据。",
     "list_files": "帮我把工作区里有哪些文件列出来。",
     "read_file": "帮我看看工作区里某个文件的内容。",

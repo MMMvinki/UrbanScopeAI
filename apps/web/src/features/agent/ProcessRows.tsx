@@ -26,6 +26,7 @@ export const TOOL_LABELS: Record<string, string> = {
   nearest_distance: '最近邻分析',
   density: '密度分析',
   supply_demand: '供需分析',
+  bivariate_moran: '双变量自相关',
   statistics: '统计分析',
   spatial_clip: '空间裁剪',
   osm_call: 'OSM 取数',

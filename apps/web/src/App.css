@@ -575,6 +575,28 @@
   outline-offset: 1px;
 }
 
+.map-toolbar__controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.map-toolbar__labels {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.map-toolbar__labels input {
+  accent-color: var(--sage);
+  margin: 0;
+  cursor: pointer;
+}
+
 .map-canvas {
   position: relative;
   height: 100%;
@@ -1295,31 +1317,70 @@
   height: 13px;
 }
 
-/* 输入区 */
+/* 输入区（Codex 式：全宽 textarea 随内容自动增高 + 底部工具栏） */
 .chat-input {
   position: relative;
   border-top: 1px solid var(--border);
-  padding: 12px 16px 14px;
+  padding: 12px 16px 10px;
   display: flex;
-  gap: 10px;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 6px;
   background: var(--surface);
 }
 
-.chat-input__actions {
+/* 工具栏：左 链接/@，右 发送/停止 */
+.chat-input__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chat-input__toolbar-left,
+.chat-input__toolbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chat-input__tool-button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
-}
-
-.chat-input__attach {
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
   color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
-.chat-input__attach:hover:not(:disabled) {
+.chat-input__tool-button:hover:not(:disabled) {
   color: var(--navy);
   background: var(--border-soft);
+}
+
+.chat-input__tool-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chat-input__mention-glyph {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  color: inherit;
+}
+
+/* 停止态：执行中红色按钮（区别于普通发送） */
+.chat-input__send.is-stop {
+  background: var(--error, #dc2626);
+}
+
+.chat-input__send.is-stop:hover {
+  background: #b91c1c;
 }
 
 .chat-input__error {
@@ -1329,6 +1390,64 @@
   color: var(--error-text);
   background: rgba(239, 68, 68, 0.06);
   border-top: 1px solid var(--border);
+}
+
+/* 待发送附件条：上传后不立刻发送，点发送才随消息一起发出（Codex 式） */
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 16px 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border-soft);
+}
+
+.chat-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 3px 6px 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--border-soft);
+}
+
+.chat-attachment svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+
+.chat-attachment__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-attachment__remove {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.chat-attachment__remove:hover {
+  background: var(--border);
+  color: var(--text);
+}
+
+.chat-attachment__remove svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* @ 提及候选层 */
@@ -1413,9 +1532,11 @@
 }
 
 .chat-input__field {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+  min-height: 42px;
+  max-height: 200px;
   resize: none;
+  overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 10px 12px;
@@ -1450,6 +1571,26 @@ button:disabled {
    ============================================================ */
 .layer-panel {
   position: relative;
+}
+
+/* 多选删除操作条：勾选模式下的计数 + 批量删除 + 完成 */
+.layer-select-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--info) 6%, var(--surface));
+}
+
+.layer-select-bar__count {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .layer-list {
@@ -1518,6 +1659,35 @@ button:disabled {
 .layer-row__drag svg {
   width: 14px;
   height: 14px;
+}
+
+/* ── 多选删除：行首复选框（多选模式替代拖拽把手）───────── */
+.layer-row__select {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.layer-row__select input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--info);
+  cursor: pointer;
+  margin: 0;
+}
+
+.layer-row__select input:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+/* 已选中的图层行高亮 */
+.layer-row.is-selected {
+  background: color-mix(in srgb, var(--info) 10%, var(--surface));
+  outline: 1px solid var(--info);
 }
 
 /* 拖动中的行半透明 */

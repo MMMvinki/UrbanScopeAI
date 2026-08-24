@@ -8,8 +8,8 @@ import { API_BASE } from '../../lib/api'
  * Phase 4 接入真实数据后，替换为按图层读取 GeoJSON。
  */
 
-/** 地图中心（演示坐标：北京市区） */
-export const MAP_CENTER: [number, number] = [116.34, 39.93]
+/** 地图中心（默认视角：深圳市中心/福田片区） */
+export const MAP_CENTER: [number, number] = [114.06, 22.55]
 
 /** 演示范围半宽（度，约 3–4 km） */
 const EXTENT_HALF = 0.035
@@ -21,65 +21,113 @@ const EXTENT_HALF = 0.035
 export interface BasemapStyle {
   id: string
   name: string
-  /** 瓦片 URL 模板（MapLibre {z}/{x}/{y} 占位） */
-  url: string
+  /**
+   * Mapbox 经典样式 id（streets-v12 等）。渲染走 Raster Tiles API 栅格瓦片
+   * （Mapbox 官方支持 MapLibre 的接法；矢量样式 JSON 用 composite 聚合源，MapLibre 解析不了）。
+   * 需 VITE_MAPBOX_TOKEN；未配 token 时该底图不进入 BASEMAPS。标注内嵌栅格，无法用开关剥掉。
+   */
+  mapboxStyle?: string
+  /** 矢量底图：完整 MapLibre 样式 URL（深放大、精细标签），优先于 url */
+  styleUrl?: string
+  /** 栅格瓦片 URL 模板（MapLibre {z}/{x}/{y} 占位），仅栅格底图使用 */
+  url?: string
   attribution: string
   /** 瓦片未加载/失败时的背景色（PRD：底图失败仍保留矢量图层） */
   background: string
 }
 
-/** 可选底图（Esri ArcGIS Online 公共服务，无需 key，已验证可访问）。浅灰街道默认。 */
-export const BASEMAPS: BasemapStyle[] = [
+/** Mapbox 经典样式（官方托管，Mapbox 文档支持 MapLibre 经 transformRequest 接入）。 */
+const MAPBOX_BASEMAPS: BasemapStyle[] = [
+  {
+    id: 'mapbox-streets',
+    name: 'Mapbox 街道',
+    mapboxStyle: 'streets-v12',
+    attribution: '© Mapbox © OpenStreetMap',
+    background: '#eef2f7',
+  },
+  {
+    id: 'mapbox-dark',
+    name: 'Mapbox 深色',
+    mapboxStyle: 'dark-v11',
+    attribution: '© Mapbox © OpenStreetMap',
+    background: '#0d131b',
+  },
+  {
+    id: 'mapbox-light',
+    name: 'Mapbox 浅色',
+    mapboxStyle: 'light-v11',
+    attribution: '© Mapbox © OpenStreetMap',
+    background: '#eef2f7',
+  },
+  {
+    id: 'mapbox-satellite',
+    name: 'Mapbox 卫星',
+    mapboxStyle: 'satellite-v9',
+    attribution: '© Mapbox',
+    background: '#0a0f14',
+  },
+]
+
+/** 免 token 底图（OpenFreeMap 矢量 + Esri 栅格），始终可用。 */
+const OPEN_BASEMAPS: BasemapStyle[] = [
   {
     id: 'light',
-    name: '浅灰街道',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Light_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Esri, HERE, Garmin',
+    name: '浅灰街道（免费）',
+    styleUrl: 'https://tiles.openfreemap.org/styles/positron',
+    attribution: '© OpenFreeMap & © OpenStreetMap contributors',
     background: '#eef2f7',
   },
   {
     id: 'satellite',
-    name: '卫星影像',
+    name: '卫星影像（免费）',
     url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     attribution: 'Esri, Maxar, Earthstar Geographics',
     background: '#0a0f14',
   },
   {
     id: 'dark',
-    name: '深色街道',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Esri, HERE, Garmin',
+    name: '深色街道（免费）',
+    styleUrl: 'https://tiles.openfreemap.org/styles/dark-matter',
+    attribution: '© OpenFreeMap & © OpenStreetMap contributors',
     background: '#0d131b',
   },
   {
     id: 'streets',
-    name: '街道详图',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Esri, HERE, Garmin',
+    name: '街道详图（免费）',
+    styleUrl: 'https://tiles.openfreemap.org/styles/liberty',
+    attribution: '© OpenFreeMap & © OpenStreetMap contributors',
     background: '#f5f1e8',
-  },
-  {
-    id: 'topo',
-    name: '地形图',
-    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-    attribution: 'Esri, USGS, NOAA',
-    background: '#e9e5d8',
   },
 ]
 
-export const DEFAULT_BASEMAP_ID = BASEMAPS[0].id
+/** 可选底图。配置 VITE_MAPBOX_TOKEN 后 Mapbox 经典样式置前作为主底图；否则仅免 token 底图。 */
+export const BASEMAPS: BasemapStyle[] = import.meta.env.VITE_MAPBOX_TOKEN
+  ? [...MAPBOX_BASEMAPS, ...OPEN_BASEMAPS]
+  : OPEN_BASEMAPS
 
-/** 底图样式：背景色（瓦片未就绪/失败时可见）+ 栅格瓦片层；数据图层叠加在其上 */
-export function buildBasemapStyle(basemap: BasemapStyle): StyleSpecification {
+/** 默认底图：配置了 Mapbox token 时默认 Mapbox 街道（用户诉求），否则回退免 token 浅灰。 */
+export const DEFAULT_BASEMAP_ID = import.meta.env.VITE_MAPBOX_TOKEN
+  ? 'mapbox-streets'
+  : OPEN_BASEMAPS[0].id
+
+/** Mapbox 经典样式 → Raster Tiles API 256 瓦片 URL（需 VITE_MAPBOX_TOKEN）。 */
+function mapboxRasterTileUrl(styleId: string): string | undefined {
+  const token = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined
+  if (!token) return undefined
+  return `https://api.mapbox.com/styles/v1/mapbox/${styleId}/tiles/256/{z}/{x}/{y}?access_token=${token}`
+}
+
+/** 栅格底图样式：背景色 + 栅格瓦片层。Mapbox 栅格瓦片可深放大到 z22，Esri 到 z19。 */
+function rasterStyle(basemap: BasemapStyle, tiles: string, maxzoom = 22): StyleSpecification {
   return {
     version: 8,
     name: basemap.name,
     sources: {
       basemap: {
         type: 'raster',
-        tiles: [basemap.url],
+        tiles: [tiles],
         tileSize: 256,
-        maxzoom: 19,
+        maxzoom,
         attribution: basemap.attribution,
       },
     },
@@ -93,6 +141,31 @@ export function buildBasemapStyle(basemap: BasemapStyle): StyleSpecification {
       },
     ],
   }
+}
+
+/**
+ * 底图样式：
+ * - Mapbox 经典样式 → Raster Tiles API 栅格瓦片（官方支持 MapLibre 的接法。不走矢量样式 JSON，
+ *   因为 streets-v12 等用 composite 聚合源 + 私有元数据字段，MapLibre 解析不了 → "unknown property" 报错）
+ * - OpenFreeMap 矢量 → 返回样式 URL（可剥标注）
+ * - Esri 栅格 → 背景色 + 栅格瓦片层
+ */
+export function buildBasemapStyle(basemap: BasemapStyle): string | StyleSpecification {
+  if (basemap.mapboxStyle) {
+    const tiles = mapboxRasterTileUrl(basemap.mapboxStyle)
+    if (tiles) return rasterStyle(basemap, tiles)
+  }
+  if (basemap.styleUrl) return basemap.styleUrl
+  return rasterStyle(basemap, basemap.url ?? '', 19)
+}
+
+/**
+ * 剥掉底图的文字/图标标注：移除所有 symbol 图层（POI/道路/地名标签）。
+ * 用于「隐藏标注」开关——OpenFreeMap 等矢量底图带大量标注，分析出图时常要干净底图。
+ */
+export function stripBasemapLabels(styleJson: StyleSpecification): StyleSpecification {
+  const layers = (styleJson.layers ?? []).filter((layer) => layer.type !== 'symbol')
+  return { ...styleJson, layers }
 }
 
 /** 最小几何结构（与 GeoJSON 兼容） */
@@ -335,7 +408,9 @@ export function featureCollectionBounds(
     const coords = feature.geometry?.coordinates
     if (!coords) continue
     forEachCoordinate(coords, (lng, lat) => {
-      if (!Number.isFinite(lng) || !Number.isFinite(lat)) return
+      // 只统计合理经纬度：坏几何（投影坐标/NaN/越界）跳过，绝不把越界值喂给 fitBounds
+      if (!(Number.isFinite(lng) && Number.isFinite(lat) && lng >= -180 && lng <= 180 && lat >= -90 && lat <= 90))
+        return
       minLng = Math.min(minLng, lng)
       minLat = Math.min(minLat, lat)
       maxLng = Math.max(maxLng, lng)
@@ -348,6 +423,22 @@ export function featureCollectionBounds(
     [minLng, minLat],
     [maxLng, maxLat],
   ]
+}
+
+/**
+ * bbox 是否可用（有限且在经纬度合理范围内）。
+ * 坏 bbox（投影坐标/NaN/越界）返回 false，调用方跳过 fitBounds，避免 MapLibre 抛
+ * "Invalid LngLat latitude value" 而白屏。
+ */
+export function isValidLngLatBounds(bbox: number[] | undefined | null): boolean {
+  if (!bbox || bbox.length < 4) return false
+  const [w, s, e, n] = bbox
+  return (
+    [w, s, e, n].every((v) => Number.isFinite(v)) &&
+    w >= -180 && w <= 180 && e >= -180 && e <= 180 &&
+    s >= -90 && s <= 90 && n >= -90 && n <= 90 &&
+    e >= w && n >= s
+  )
 }
 
 /* ---------- 地图图层注册 ---------- */

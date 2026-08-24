@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react'
-import { ChevronDown, ChevronRight, Folder, Lock, Plus, Users } from 'lucide-react'
+import { ChevronDown, ChevronRight, Folder, ListChecks, Lock, Plus, Trash2, Users, X } from 'lucide-react'
 import type { DragEvent } from 'react'
 import type { LayerAction } from './layerTypes'
 import { LayerRow } from './LayerRow'
@@ -36,6 +36,49 @@ export function LayerPanel() {
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
   // 就地重命名：正在编辑的图层 id
   const [renamingId, setRenamingId] = useState<string | null>(null)
+
+  // 多选删除：多选模式 + 已选图层 id 集合（平台只读图层不可选）
+  const [selectMode, setSelectMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+
+  const enterSelectMode = () => {
+    setSelectMode(true)
+    setSelectedIds(new Set())
+  }
+
+  const exitSelectMode = () => {
+    setSelectMode(false)
+    setSelectedIds(new Set())
+  }
+
+  const toggleSelect = (layerId: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(layerId)) next.delete(layerId)
+      else next.add(layerId)
+      return next
+    })
+  }
+
+  /** 批量删除所选图层：只删非只读图层；逐个走后端彻底删除，部分失败时提示 */
+  const handleMultiDelete = async () => {
+    const targets = layers.filter((layer) => selectedIds.has(layer.id) && !layer.readonly)
+    if (targets.length === 0) return
+    const names = targets.map((layer) => `「${layer.name}」`).join('、')
+    if (
+      !window.confirm(
+        `删除选中的 ${targets.length} 个图层？\n${names}\n这些图层将从地图与数据中移除。`,
+      )
+    ) {
+      return
+    }
+    const results = await Promise.allSettled(targets.map((layer) => removeLayer(layer.id)))
+    const failed = results.filter((result) => result.status === 'rejected')
+    if (failed.length > 0) {
+      window.alert(`有 ${failed.length} 个图层删除失败，请重试。`)
+    }
+    exitSelectMode()
+  }
 
   // 平台数据只读图层：折叠展开状态（默认展开）
   const [platformExpanded, setPlatformExpanded] = useState(true)
@@ -176,6 +219,9 @@ export function LayerPanel() {
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           onDragEnd={handleDragEnd}
+          selectMode={selectMode}
+          selected={selectedIds.has(layer.id)}
+          onToggleSelect={() => toggleSelect(layer.id)}
         />
         {/* 分级设色图例：ArcGIS 式色块 + 数值区间，紧跟图层行下方，可下拉收起 */}
         <LayerLegend layerId={layer.id} />
@@ -196,9 +242,46 @@ export function LayerPanel() {
             <Plus aria-hidden="true" />
             添加数据
           </button>
+          <button
+            type="button"
+            className={
+              selectMode ? 'button button--secondary button--sm is-active' : 'button button--secondary button--sm'
+            }
+            onClick={() => (selectMode ? exitSelectMode() : enterSelectMode())}
+            title="勾选多个图层后批量删除"
+          >
+            <ListChecks aria-hidden="true" />
+            {selectMode ? '退出多选' : '多选'}
+          </button>
           <PanelCollapseButton />
         </div>
       </header>
+
+      {/* 多选删除操作条：显示已选数量 + 批量删除 + 完成 */}
+      {selectMode && (
+        <div className="layer-select-bar">
+          <span className="layer-select-bar__count">
+            已选 {selectedIds.size} 个图层{selectedIds.size > 0 ? '（平台数据只读不可选）' : ''}
+          </span>
+          <button
+            type="button"
+            className="button button--danger button--sm"
+            disabled={selectedIds.size === 0}
+            onClick={() => void handleMultiDelete()}
+          >
+            <Trash2 aria-hidden="true" />
+            删除所选
+          </button>
+          <button
+            type="button"
+            className="button button--ghost button--sm"
+            onClick={exitSelectMode}
+          >
+            <X aria-hidden="true" />
+            完成
+          </button>
+        </div>
+      )}
 
       {layers.length === 0 ? (
         <div className="empty-state">
