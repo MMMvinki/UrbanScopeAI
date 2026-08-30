@@ -1,0 +1,108 @@
+{
+  "schema_version": "1.0",
+  "id": "street-view-metrics",
+  "kind": "executable",
+  "name": "街景绿视率与天空可视因子",
+  "description": "沿路网布点，采集百度街景全景图，用 Cityscapes 预训练语义分割模型（fastseg）逐像素分类，计算绿视率（植被占比）、天空可视因子（天空占比）等类别占比，输出点图层上图。当用户问「绿视率 / 天空可视因子 / 街景分类占比 / 绿化可视率 / 天空可见度」时使用。",
+  "core_question": "街道沿线的绿视率与天空可视因子分布如何？",
+  "keywords": [],
+  "required_data": [],
+  "outputs": [],
+  "indicators": [],
+  "body": "",
+  "plan": null,
+  "scope": "builtin",
+  "version": "0.1.0",
+  "revision": 1,
+  "status": "validated",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "torch",
+      "fastseg",
+      "geopandas",
+      "shapely",
+      "pyproj",
+      "numpy",
+      "requests",
+      "Pillow"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "bbox": {
+        "type": "array",
+        "description": "研究范围 [西经, 南纬, 东经, 北纬]（WGS-84）；与 study_area_layer_id 二选一",
+        "items": { "type": "number" }
+      },
+      "study_area_layer_id": {
+        "type": "string",
+        "description": "可选：研究范围多边形图层 id（如某区边界），用其范围限定采样区"
+      },
+      "roads_layer_id": {
+        "type": "string",
+        "description": "可选：道路图层（LineString）id；不传则在研究范围内从 OpenStreetMap 抓道路路网"
+      },
+      "spacing_m": {
+        "type": "number",
+        "description": "沿路网采样间距（米），默认 50；大面积建议 100~200",
+        "default": 50
+      },
+      "view_mode": {
+        "type": "string",
+        "enum": ["quad", "full"],
+        "description": "quad=4 朝向(0/90/180/270, 默认，更稳健)；full=360°全景单图(快、粗略)",
+        "default": "quad"
+      },
+      "fov": {
+        "type": "number",
+        "description": "水平视角（度），默认 90",
+        "default": 90
+      },
+      "pitch": {
+        "type": "number",
+        "description": "垂直视角（度，正值向下），默认 -5（略俯视，贴近人眼/车载视角）",
+        "default": -5
+      },
+      "max_points": {
+        "type": "integer",
+        "description": "本次最多采样点数（超大面积自动截断，防单次超时；超过会提示分块）",
+        "default": 60
+      },
+      "baidu_ak": {
+        "type": "string",
+        "description": "可选：百度地图服务端 AK；不传则读环境变量 BAIDU_AK / apps/api/.env"
+      }
+    },
+    "required": []
+  },
+  "output_schema": {},
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [
+      "bbox",
+      "study_area_layer_id",
+      "roads_layer_id",
+      "spacing_m",
+      "view_mode",
+      "fov",
+      "pitch",
+      "max_points",
+      "baidu_ak"
+    ],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 0,
+    "last_run_at": null
+  },
+  "created_at": "2026-08-30T00:00:00",
+  "updated_at": "2026-08-30T00:00:00"
+}

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import type { AgentMessage, DataCheckResult } from './agentTypes'
 import { useAppStore } from '../../store/useAppStore'
 import { LiquidOrb } from '../../components/LiquidOrb'
-import { ThinkingRow } from './ThinkingRow'
+import { ThinkingRow, formatDuration } from './ThinkingRow'
 import { PlanCard } from './PlanCard'
 import { MarkdownText } from './MarkdownText'
 import { CodeRow, EventRow, ToolRow } from './ProcessRows'
@@ -171,8 +171,8 @@ function AgentBubble({ message }: { message: AgentMessage }) {
           </span>
         )}
 
-        {/* 流式期间：顶部思考行 = 正在生成的叙事（流结束自动收起） */}
-        {streaming && <ThinkingRow text={bodyText} streaming />}
+        {/* 流式期间：顶部思考行 = 正在生成的叙事（流结束自动收起）；实时「已思考 Xs」 */}
+        {streaming && <ThinkingRow text={bodyText} streaming startedAt={message.startedAt} />}
 
         {message.plan && message.plan.length > 0 && <PlanCard steps={message.plan} />}
         {message.dataCheck && <DataCheckLine result={message.dataCheck} />}
@@ -220,8 +220,16 @@ function AgentBubble({ message }: { message: AgentMessage }) {
           </RowCollapse>
         )}
 
-        {/* 结束后：思考正文与结论不同 → 折叠成可展开的「思考过程」行（改动 5） */}
-        {hasSeparateThinking && <ThinkingRow text={bodyText} streaming={false} collapsible />}
+        {/* 结束后：思考正文与结论不同 → 折叠成可展开的「思考过程」行（改动 5），标题后固定「已处理 Xs」 */}
+        {hasSeparateThinking && (
+          <ThinkingRow
+            text={bodyText}
+            streaming={false}
+            collapsible
+            startedAt={message.startedAt}
+            elapsedMs={message.elapsedMs}
+          />
+        )}
 
         {/* 最终回复/结论：结论文本（finalAnswer），放最底部；无则回退整个正文 */}
         {!streaming && replyText && <MarkdownText text={replyText} />}
@@ -240,6 +248,11 @@ function AgentBubble({ message }: { message: AgentMessage }) {
             <History aria-hidden="true" />
             查看运行记录
           </button>
+        )}
+
+        {/* 兜底：完成后无独立思考行（正文即结论）时，在底部标出处理耗时 */}
+        {!streaming && !hasSeparateThinking && message.elapsedMs != null && (
+          <div className="chat-elapsed">已处理 {formatDuration(message.elapsedMs)}</div>
         )}
       </div>
       {runArchiveOpen && message.runId && (
@@ -269,7 +282,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
           <LiquidOrb size={28} fallback={<Bot />} />
         </div>
         <div className="chat-bubble chat-bubble--agent chat-bubble--flow">
-          <ThinkingRow text="" streaming title="正在理解问题…" />
+          <ThinkingRow text="" streaming title="正在理解问题…" startedAt={message.startedAt} />
         </div>
       </div>
     )

@@ -538,6 +538,13 @@ class SkillStore:
         env["PYTHONPATH"] = (
             api_root + os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else api_root
         )
+        # 编码钉死 UTF-8（Windows 中文环境 locale 是 GBK）：
+        # - 子进程 print 的 plot 事件 JSON 行含 ensure_ascii=False 的中文，GBK 管线下
+        #   print 会抛 UnicodeEncodeError；PYTHONIOENCODING 强制子进程写 UTF-8；
+        # - 父进程 text=True 默认按 locale（GBK）解码子进程 stdout → 读到 UTF-8 字节
+        #   直接 UnicodeDecodeError 崩 reader 线程（不致命但脏日志、可致技能产物丢失）。
+        # 两侧对齐 UTF-8 + errors=replace，杜绝这两类编码坑。
+        env["PYTHONIOENCODING"] = "utf-8"
         try:
             proc = subprocess.run(
                 [
@@ -552,6 +559,8 @@ class SkillStore:
                 cwd=str(WORKSPACE_ROOT),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=600,
                 env=env,
             )

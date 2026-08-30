@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react'
-import { ChevronDown, ChevronRight, Folder, ListChecks, Lock, Plus, Trash2, Users, X } from 'lucide-react'
+import { ChevronDown, ChevronRight, Folder, ListChecks, Lock, Pencil, Plus, Trash2, Users, X } from 'lucide-react'
 import type { DragEvent } from 'react'
 import type { LayerAction } from './layerTypes'
 import { LayerRow } from './LayerRow'
@@ -29,6 +29,8 @@ export function LayerPanel() {
   const moveLayer = useAppStore((s) => s.moveLayer)
   const openUploadModal = useAppStore((s) => s.openUploadModal)
   const hydrateData = useAppStore((s) => s.hydrateData)
+  const requestDraw = useAppStore((s) => s.requestDraw)
+  const requestEditDrawnLayer = useAppStore((s) => s.requestEditDrawnLayer)
 
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const [modal, setModal] = useState<{ layerId: string; kind: ModalKind } | null>(null)
@@ -131,6 +133,10 @@ export function LayerPanel() {
         break
       case 'preview':
         setModal({ layerId, kind: 'preview' })
+        break
+      case 'edit':
+        // 手绘图层：进入地图编辑会话（载入几何 → select 拖顶点 → 完成时 PUT 保存）
+        if (layer?.source === 'drawn' && !layer.readonly) requestEditDrawnLayer(layerId)
         break
       case 'delete':
         if (
@@ -241,6 +247,15 @@ export function LayerPanel() {
           >
             <Plus aria-hidden="true" />
             添加数据
+          </button>
+          <button
+            type="button"
+            className="button button--secondary button--sm"
+            onClick={() => requestDraw()}
+            title="在地图上手绘点/线/面创建图层"
+          >
+            <Pencil aria-hidden="true" />
+            新建绘制
           </button>
           <button
             type="button"

@@ -1,0 +1,8 @@
+torch
+fastseg
+geopandas
+shapely
+pyproj
+numpy
+requests
+Pillow

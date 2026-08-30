@@ -68,6 +68,10 @@ export interface AgentMessage {
   streamMode?: 'demo' | 'live'
   /** 归属 run id（/runs/{id} 追溯） */
   runId?: string
+  /** 本轮处理开始时间（epoch ms）：placeholder 创建时打点，驱动「已思考 Xs」实时计时 */
+  startedAt?: number
+  /** 完成耗时（ms）：执行/停止/出错落 done 时冻结，展示「已处理 Xs」 */
+  elapsedMs?: number
   /** 本运行对应的成果组 id：回复下方「成果产物」chip 跳转成果页用 */
   resultGroupId?: string
   /** 门1 意图澄清：追问气泡（问题 + 选项按钮 + 可打字），不执行 */

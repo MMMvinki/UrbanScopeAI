@@ -13,6 +13,7 @@ class LayerSource(str, Enum):
     platform = "platform"
     uploaded = "uploaded"
     generated = "generated"
+    drawn = "drawn"  # 用户在地图上手绘点/线/面创建的图层
 
 
 class FieldSpec(BaseModel):
@@ -52,6 +53,8 @@ class LayerMetadata(BaseModel):
     styleMode: str | None = None  # single | graduated | categorized
     visualVariables: dict | None = None  # renderer 描述：graduated{field,method,classes,palette,breaks} / size_variable / opacity_variable
     labelField: str | None = None  # 标注字段
+    # ── 手绘增强（2026-08-30）：自动字段单位偏好 ─────────────────
+    units: dict[str, str] | None = None  # {"length":"m"|"km","area":"m2"|"hm2"|"km2"}，供编辑时按同单位重算
 
 
 class LayerPatch(BaseModel):
@@ -73,6 +76,7 @@ class LayerPatch(BaseModel):
     styleMode: str | None = None
     visualVariables: dict | None = None
     labelField: str | None = None
+    units: dict[str, str] | None = None
 
 
 class LayerSchema(BaseModel):
@@ -83,3 +87,31 @@ class LayerSchema(BaseModel):
     feature_count: int
     fields: list[FieldSpec] = Field(default_factory=list)
     sample: list[dict[str, object]] = Field(default_factory=list)
+
+
+class DrawLayerRequest(BaseModel):
+    """POST /layers/draw 入参：前端手绘点/线/面 → 注册为图层。
+
+    geojson 接受 FeatureCollection / 裸 Feature / 裸 Geometry 任意形态，
+    load_feature_collection 统一归一。fields 可显式传；缺省时按要素 properties 推断。
+    """
+
+    layer_id: str | None = None
+    name: str
+    crs: str = "EPSG:4326"
+    geojson: dict
+    color: str = "#0F172A"
+    fields: list[FieldSpec] | None = None
+    units: dict[str, str] | None = None  # 手绘自动字段单位偏好（创建即持久化，编辑时按同单位重算）
+
+
+class UpdateLayerGeojsonRequest(BaseModel):
+    """PUT /layers/{id}/geojson 入参：编辑已建（非只读）图层的几何后保存。
+
+    geojson 为前端 TerraDraw collect 回的 FeatureCollection；fields 显式传，缺省按 properties 推断；
+    units 记录本次编辑所选的长度/面积单位，供后续编辑按同单位重算。
+    """
+
+    geojson: dict
+    fields: list[FieldSpec] | None = None
+    units: dict[str, str] | None = None

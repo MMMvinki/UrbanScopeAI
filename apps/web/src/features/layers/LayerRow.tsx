@@ -9,6 +9,7 @@ const sourceLabel: Record<LayerMetadata['source'], string> = {
   platform: '平台数据',
   uploaded: '上传数据',
   generated: '生成数据',
+  drawn: '手绘数据',
 }
 
 interface LayerRowProps {
@@ -235,7 +236,7 @@ export function LayerRow({
           <MoreHorizontal aria-hidden="true" />
         </button>
         {menuOpen && (
-          <LayerMenu onClose={onCloseMenu} onAction={onAction} readonly={layer.readonly} />
+          <LayerMenu onClose={onCloseMenu} onAction={onAction} readonly={layer.readonly} editable={layer.source === 'drawn' && !layer.readonly} />
         )}
       </div>
     </div>

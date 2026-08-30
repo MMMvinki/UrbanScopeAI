@@ -8,7 +8,8 @@ interface TypingFooterProps {
 
 /**
  * 底部工作状态（对齐典型消息流底部状态）：消息流末尾的「头像 + 呼吸点 +
- * 当前在做什么」，替代原来的「正在理解问题…」占位气泡，不占消息位。
+ * 当前在做什么」。只标进行中工具/代码（「正在获取数据… / 正在执行代码…」），
+ * 思考/理解这类通用状态由消息气泡的思考行（含实时计时）承担，不在此重复。
  */
 export function TypingFooter({ label }: TypingFooterProps) {
   if (!label) return null

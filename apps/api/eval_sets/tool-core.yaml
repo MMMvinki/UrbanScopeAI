@@ -1,0 +1,258 @@
+# tool 级核心真值回归集（Phase 0）
+#
+# 原则（见 docs/eval-system-design.md 3.1/3.5）：
+# - 真值全部来自确定性 oracle 执行（探针实测），不从模型期望来；
+# - buffer/coverage/nearest/statistics 的生成图层经 set_geojson/engine 注册，
+#   不进 list_layers diff → 只断言 output 值，不断言生成图层；
+# - 边界/健壮性 case 的“正确答案”=优雅拒绝或空结果，不是产出图层；
+# - 安全扫描用占位符，真实密钥永不出现在本文件（测试时注入，Phase 2）。
+name: tool-core
+description: 核心工具确定性回归：历史 bug 回归 + 平台真值断言 + 健壮性/边界
+cases:
+
+  # ── 真值（确定性执行） ──────────────────────────────────────────────
+  - id: schema_poi_餐饮
+    title: 数据集 schema：poi_餐饮 要素数与几何类型
+    category: schema
+    difficulty: easy
+    tool: get_dataset_schema
+    params: {layer_id: "poi_餐饮"}
+    expected: {expected_outcome: success}
+    ground_truth:
+      values: {feature_count: 152789, geometry: "Point"}
+
+  - id: query_hospitals_4946
+    title: 属性查询：医院类医疗 POI 命中 4946
+    category: query
+    difficulty: normal
+    tool: query_features
+    params:
+      layer_id: "poi_医疗保健"
+      filter: {type_: {op: contains, value: "医院"}}
+      limit: 5
+    expected: {expected_outcome: success}
+    ground_truth:
+      values: {total_matched: 4946, layer_id: "poi_医疗保健"}
+
+  - id: extract_hospitals
+    title: 属性提取：医院子集 4946 要素 + bbox 在深圳
+    category: extract
+    difficulty: normal
+    tool: extract_features
+    params:
+      source_layer_id: "poi_医疗保健"
+      filter: {type_: {op: contains, value: "医院"}}
+    expected: {expected_outcome: success}
+    ground_truth:
+      layer_count_range: [4946, 4946]
+      bbox_inside: [113.7, 22.4, 114.6, 22.9]
+      fields_present: ["type_", "name"]
+      values: {feature_count: 4946}
+
+  - id: buffer_500
+    title: 缓冲区：poi_公共设施 500m 正常产出
+    category: analysis
+    difficulty: easy
+    tool: buffer
+    params: {layer_id: "poi_公共设施", distance: 500}
+    expected: {expected_outcome: success}
+    ground_truth:
+      values: {output_layer_id: "poi_公共设施_buffer", distance: 500}
+
+  - id: coverage_800_range
+    title: 覆盖率：输出为合理区间（真计算，base=shenzhen_communities）
+    category: analysis
+    difficulty: easy
+    tool: coverage
+    params: {layer_id: "poi_医疗保健", distance: 800}
+    expected: {expected_outcome: success}
+    ground_truth:
+      values:
+        output_layer_id: {$exists: true}
+        coverage_rate: {$range: [40, 85]}
+        covered_area_km2: {$range: [1000, 1500]}
+        distance: 800
+
+  - id: nearest_distance_streets
+    title: 最近距离：街道到医疗 POI 平均距离在合理范围
+    category: analysis
+    difficulty: normal
+    tool: nearest_distance
+    params:
+      target_layer_id: "shenzhen_streets"
+      reference_layer_id: "poi_医疗保健"
+    expected: {expected_outcome: success}
+    ground_truth:
+      values:
+        output_layer_id: {$exists: true}
+        avg_distance_m: {$range: [0, 5000]}
+
+  - id: statistics_two_layers
+    title: 统计：两个图层覆盖率汇总
+    category: analysis
+    difficulty: easy
+    tool: statistics
+    params: {layer_ids: ["poi_餐饮", "poi_购物"], agg: coverage_rate}
+    expected: {expected_outcome: success}
+    ground_truth:
+      values: {agg: coverage_rate, count: 2, summary: {$exists: true}}
+
+  - id: spatial_clip_公共设施
+    title: 空间裁剪：公共设施裁剪到街道范围保留 7243
+    category: spatial
+    difficulty: normal
+    tool: spatial_clip
+    params:
+      target_layer_id: "poi_公共设施"
+      clip_layer_id: "shenzhen_streets"
+    expected: {expected_outcome: success}
+    ground_truth:
+      layer_count_range: [7243, 7243]
+      bbox_inside: [113.7, 22.4, 114.7, 22.9]
+      fields_present: ["type_"]
+      values: {feature_count: 7243, clip_ratio: {value: 99.9, $tol: 0.2}}
+
+  # ── 外部依赖（高德） ────────────────────────────────────────────────
+  - id: amap_geocode_wgs84
+    title: geocode：返回 WGS-84 坐标（GCJ-02→WGS-84 回归）
+    category: amap
+    difficulty: normal
+    depends_external: amap
+    tool: amap_call
+    params:
+      command: geocode
+      params: '{"address": "深圳市南山区科技园"}'
+    expected: {expected_outcome: success}
+    ground_truth:
+      values:
+        address: "深圳市南山区科技园"
+        results[0].location: {value: [113.94116, 22.54762], $tol: 0.0001}
+    safety:
+      forbidden: ["<AMAP_API_KEY>", "sk-", "mapbox.pk."]
+
+  - id: amap_district_bbox
+    title: district：深圳市边界 bbox 与环数回归
+    category: amap
+    difficulty: normal
+    depends_external: amap
+    tool: amap_call
+    params:
+      command: district
+      params: '{"keywords": "深圳市", "subdistrict": 0}'
+    expected: {expected_outcome: success}
+    ground_truth:
+      values:
+        feature_count: 1
+        ring_count: 6
+        geometry_types: ["MultiPolygon"]
+        bbox: {value: [113.74628, 22.399287, 114.62397, 22.864719], $tol: 0.0001}
+
+  # ── 上传 / 转换 ─────────────────────────────────────────────────────
+  - id: csv_to_geojson_sample
+    title: CSV→GeoJSON：3 行样例转换 + 列识别
+    category: upload
+    difficulty: easy
+    tool: csv_to_geojson
+    params: {input_path: "eval_fixtures/sample.csv"}
+    setup:
+      - path: eval_fixtures/sample.csv
+        content: |
+          name,lng,lat
+          点A,113.94,22.55
+          点B,113.95,22.56
+          点C,113.96,22.54
+    expected: {expected_outcome: success}
+    ground_truth:
+      values:
+        feature_count: 3
+        lat_column: "lat"
+        lng_column: "lng"
+        skipped_rows: 0
+        geometry_type: "Point"
+
+  - id: register_layer_sample
+    title: 发布 GeoJSON：2 要素进图层面板
+    category: upload
+    difficulty: easy
+    tool: register_layer
+    params: {file_path: "eval_fixtures/sample.geojson"}
+    setup:
+      - path: eval_fixtures/sample.geojson
+        content: |
+          {"type":"FeatureCollection","features":[
+            {"type":"Feature","properties":{"name":"A"},"geometry":{"type":"Point","coordinates":[113.94,22.55]}},
+            {"type":"Feature","properties":{"name":"B"},"geometry":{"type":"Point","coordinates":[113.95,22.56]}}
+          ]}
+    expected: {expected_outcome: success}
+    ground_truth:
+      layer_count_range: [2, 2]
+      bbox_inside: [113.9, 22.5, 114.0, 22.6]
+      values: {feature_count: 2, geometry_types: ["Point"], name: "sample"}
+
+  # ── 健壮性：空 / 越界 / 非法参数 ────────────────────────────────────
+  - id: query_empty_keyword
+    title: 查询空结果：不存在的关键词 → 返回 0（不崩不编造）
+    category: robustness
+    difficulty: normal
+    tool: query_features
+    params:
+      layer_id: "poi_餐饮"
+      filter: {name: {op: contains, value: "不存在的店XYZ"}}
+    expected: {expected_outcome: empty}
+    ground_truth:
+      values: {total_matched: 0, sample_count: 0}
+
+  - id: query_unknown_field
+    title: 查询不存在字段 → 优雅拒绝
+    category: robustness
+    difficulty: normal
+    tool: query_features
+    params:
+      layer_id: "poi_餐饮"
+      filter: {幽灵字段: 1}
+    expected: {expected_outcome: refuse}
+
+  - id: extract_empty_match
+    title: 提取空子集 → 拒绝而非产出空图层
+    category: robustness
+    difficulty: normal
+    tool: extract_features
+    params:
+      source_layer_id: "poi_餐饮"
+      filter: {name: {op: contains, value: "不存在的店XYZ"}}
+    expected: {expected_outcome: refuse}
+
+  - id: schema_missing_layer
+    title: 不存在的图层 → 优雅拒绝
+    category: robustness
+    difficulty: easy
+    tool: get_dataset_schema
+    params: {layer_id: "不存在图层abc"}
+    expected: {expected_outcome: refuse}
+
+  - id: amap_poi_empty
+    title: 高德 POI 空结果 → 返回 0 不崩
+    category: amap
+    difficulty: normal
+    depends_external: amap
+    tool: amap_call
+    params:
+      command: poi_search
+      params: '{"mode": "around", "location": [113.94116, 22.54762], "radius": 1000, "keywords": "不存在的火星餐厅XYZ"}'
+    expected: {expected_outcome: empty}
+    ground_truth:
+      values: {fetched: 0}
+
+  # ── 边界：负距离（预期拒绝——当前工具接受，暴露真 bug） ─────────────
+  - id: buffer_negative_distance
+    title: "边界：负距离缓冲区应拒绝（曾为 bug：成功返回，已被评估抓出并修复）"
+    category: boundary
+    difficulty: hard
+    tool: buffer
+    params: {layer_id: "poi_公共设施", distance: -500}
+    fault:
+      kind: bad_param
+      technique: edge
+      via: {distance: -500}
+      expected_signal: ["拒绝", "distance", "正数"]
+    expected: {expected_outcome: refuse}

@@ -204,6 +204,11 @@ def _user_prompt(request: ExecuteRequest) -> str:
             f"1. 若本次的**核心分析目标**在「被放弃」列表里（如原要分析人群画像但已跳过），则不要继续围绕该目标组织任何工具调用，直接输出结论：先说明『因缺少该数据且您选择跳过，本次无法完成此分析』，再（可选）基于其余现有图层做一两个真实的基础观察作为补充；",
             "2. 若核心目标未缺失，照常执行；其余被跳过/缺失的分析对象只分析可用部分，结论注明“因缺数据未分析”；",
             "3. 输出最终中文结论。",
+            "4. 【最终回复规范】给用户的最后一整段消息必须是**完整、面向用户的中文正文**：总结分析结论，"
+            "或把本任务需要用户回答/确认的问题整段写出（含必要的前置说明）。"
+            "禁止以「## 反思」、思考过程口头语、或孤立的 Markdown 表格行（如 `|---|---|---|`）结尾；"
+            "不要再输出一段独立的「反思/复盘」（反思由系统另行记录，无需你写）；"
+            "引导/推荐类正文要完整写完，不要把面向用户的话拆成只剩表格头或半句话。",
         ]
     )
     return "\n".join(lines)
@@ -1298,7 +1303,7 @@ def try_execute(
                     result_group=None,
                     evidence=[],
                     reflection="纯地图控制/样式类 run：工具事件已实时下发到地图，无分析成果卡。",
-                    final_answer=_last_text(trace),
+                    final_answer=conclusion or _last_text(trace),
                 )
             if any(e.type == "text" for e in trace[3:]):
                 # 组不出成果卡但有 Agent 文字产出（咨询/解释/说明性回应，如「带宽怎么设置」）：
@@ -1309,7 +1314,7 @@ def try_execute(
                     result_group=None,
                     evidence=[],
                     reflection="Agent 已给出文字说明但未形成结果图层/成果卡（咨询、解释或执行未落成图层）。",
-                    final_answer=_last_text(trace),
+                    final_answer=conclusion or _last_text(trace),
                 )
             return None
         evidence: list[str] = []

@@ -64,12 +64,14 @@ def buffer(facility_layer_id: str, distance_m: int):
 def coverage(
     facility_layer_id: str,
     distance_m: int,
-    base_layer_id: str = "residential",
+    base_layer_id: str = "shenzhen_communities",
 ):
     """设施服务半径覆盖率（真计算）。
 
-    口径：buffer(设施, distance) ∩ 居住用地面积 / 居住用地总面积（%）。
-    返回 dict（含 output geojson）或 None。
+    口径：buffer(设施, distance) ∩ 居住社区面积 / 居住社区总面积（%）。
+    base 默认 shenzhen_communities（社区边界 ≈ 居住承载区）；demo 时代的
+    "residential" 图层已随平台迁移不存在，硬编码会让 coverage 永远走演示兜底
+    （e2e 暴露：产物图层 0 要素 + 地图空白）。返回 dict（含 output geojson）或 None。
     """
     facilities = load_gdf(facility_layer_id)
     base = load_gdf(base_layer_id)

@@ -231,7 +231,7 @@ export function StylePanel({ layerId, onClose }: StylePanelProps) {
   const fillColor = style?.fillColor ?? layer.color
   const strokeColor = style?.strokeColor ?? layer.color
   // 改动 4：填充/描边不透明度分离；旧值 opacity 兼容（fill ?? opacity ?? 默认，stroke 默认跟随 fill）
-  const baseOpacity = layer.source === 'generated' ? 0.27 : 0.51
+  const baseOpacity = 0.8
   const fillOpacity = style?.fillOpacity ?? style?.opacity ?? baseOpacity
   const strokeOpacity = style?.strokeOpacity ?? style?.opacity ?? fillOpacity
   const rasterOpacity = style?.opacity ?? 0.85

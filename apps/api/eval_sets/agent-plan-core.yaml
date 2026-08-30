@@ -1,0 +1,470 @@
+# agent 级 plan-only 核心评估集（Phase 1）
+#
+# 每条 case：真实调用 plan_for(question, history) → 断言 PlanResult 结构
+# （operation / intent_id / targets / distance / plan[].tool / 门1 clarify / 门2 缺数据）。
+# 零注册表/工作区污染（纯 LLM 单次调用），run_eval 里 ThreadPoolExecutor(4) 并发 + 超时。
+#
+# 原则（docs/eval-system-design.md）：
+# - 每个 case 的 expected 是「意图契约」，不是对 LLM 措辞的精确复刻；
+#   operation 用 "|" 允许集，targets 用 $contains（成员+任意序+可额外），distance 用 $range；
+# - 第一轮跑完后按「合法歧义校准 / 真 bug 修复」收敛（校准有注释）。
+# - 平台真实图层 id：shenzhen_districts/streets/communities/planning/roads + poi_*。
+#   目标对象「学校→poi_科教文化 / 医院→poi_医疗保健 / 公园→poi_风景名胜 /
+#   地铁→poi_交通设施 / 银行→poi_金融保险 / 餐饮→poi_餐饮」由 LLM 从系统提示的图层清单里选。
+name: agent-plan-core
+description: agent 级规划层回归：意图路由 + 技能计划卡顶替 + 澄清门1 + 缺数据门2 + 参数解析 + 多轮历史 + 边界
+cases:
+
+  # ── 意图路由（operation 正确分派） ────────────────────────────────────
+  - id: plan_route_餐饮覆盖800
+    title: 路由：餐饮 POI 800 米覆盖率
+    category: 路由
+    tier: plan
+    difficulty: easy
+    question: 分析深圳餐饮POI的800米服务覆盖率
+    expected:
+      operation: coverage
+      intent: coverage
+      params:
+        distance: {$range: [800, 800]}
+        targets: {$contains: ["poi_餐饮"]}
+
+  - id: plan_route_学校覆盖
+    title: 路由：学校 800 米服务覆盖（学校→poi_科教文化）
+    category: 路由
+    tier: plan
+    difficulty: easy
+    question: 帮我看看深圳学校的800米服务覆盖率
+    expected:
+      operation: coverage
+      intent: coverage
+      params:
+        distance: {$range: [800, 800]}
+        targets: {$contains: ["poi_科教文化"]}
+
+  - id: plan_route_公园覆盖
+    title: 路由：公园覆盖（「公园」可能写 id 或标缺，OR 断言）
+    category: 路由
+    tier: plan
+    difficulty: easy
+    question: 深圳公园的服务覆盖率怎么样
+    expected:
+      operation: coverage
+      objects:
+        - {layer: "poi_风景名胜", words: ["公园"]}
+
+  - id: plan_route_叠加餐饮街道
+    title: 路由：餐饮 POI 叠加街道边界（overlay）
+    category: 路由
+    tier: plan
+    difficulty: normal
+    question: 把深圳的餐饮POI叠加到街道边界上看看分布
+    expected:
+      operation: overlay
+      intent: overlay
+      tool_seq: [spatial_join]
+
+  - id: plan_route_医院最近距离
+    title: 路由：社区到医院最短距离
+    category: 路由
+    tier: plan
+    difficulty: normal
+    question: 计算深圳各社区到医院的最短距离
+    expected:
+      operation: nearest_distance
+      intent: nearest
+      tool_seq: [nearest_distance]
+
+  - id: plan_route_餐饮密度
+    title: 路由：餐饮 POI 密度指数
+    category: 路由
+    tier: plan
+    difficulty: easy
+    question: 算一下深圳餐饮POI的密度
+    expected:
+      operation: density
+      intent: density
+
+  - id: plan_route_餐饮核密度
+    title: 路由：餐饮 POI 核密度（可执行 skill，断言 operation 即可）
+    category: 路由
+    tier: plan
+    difficulty: normal
+    question: 对深圳餐饮POI做核密度分析
+    expected:
+      operation: density|kernel_density
+      intent: kernel
+
+  - id: plan_route_供需generic
+    title: 路由：设施供给与需求匹配度（避开「供需/公共服务」技能词）
+    category: 路由
+    tier: plan
+    difficulty: normal
+    question: 计算深圳各街道的医疗设施供给与需求的匹配度
+    expected:
+      operation: supply_demand
+
+  - id: plan_route_general
+    title: 路由：综合空间分布差异（general 兜底）
+    category: 路由
+    tier: plan
+    difficulty: normal
+    question: 综合看一下深圳各区的空间分布差异
+    expected:
+      operation: general|coverage|overlay
+
+  - id: plan_route_chat你好
+    title: 闲聊：问候语
+    category: 路由
+    tier: plan
+    difficulty: easy
+    question: 你好
+    expected:
+      operation: chat
+      intent: chat
+
+  - id: plan_route_chat能力
+    title: 闲聊：询问平台能力
+    category: 路由
+    tier: plan
+    difficulty: easy
+    question: 你能做什么？
+    expected:
+      operation: chat
+      intent: chat
+
+  - id: plan_route_chat谢谢
+    title: 闲聊：致谢
+    category: 路由
+    tier: plan
+    difficulty: easy
+    question: 谢谢你的分析
+    expected:
+      operation: chat
+      intent: chat
+
+  # ── 技能命中：计划卡顶替回归（分析类技能保留完整计划 + 前置 get_skill） ──
+  - id: plan_skill_生活圈
+    title: 技能：15 分钟生活圈（不顶成单步）
+    category: 技能
+    tier: plan
+    difficulty: normal
+    question: 对深圳做一个15分钟生活圈分析
+    expected:
+      intent: fifteen_minute_life_circle
+      operation: general
+      tool_seq: [get_skill]
+
+  - id: plan_skill_生活圈变体
+    title: 技能：生活圈覆盖问法（强技能词）
+    category: 技能
+    tier: plan
+    difficulty: normal
+    question: 对深圳做一个15分钟生活圈设施覆盖分析
+    expected:
+      intent: fifteen_minute_life_circle
+      tool_seq: [get_skill]
+
+  - id: plan_skill_体检
+    title: 技能：街区城市体检（coverage 流程 + 前置 get_skill）
+    category: 技能
+    tier: plan
+    difficulty: normal
+    question: 帮我对深圳做一次街区城市体检
+    expected:
+      intent: community_health_check
+      operation: coverage
+      tool_seq: [get_skill]
+
+  - id: plan_skill_公共服务
+    title: 技能：公共服务设施评估（supply_demand 流程）
+    category: 技能
+    tier: plan
+    difficulty: normal
+    question: 评估一下深圳的公共服务设施配置情况
+    expected:
+      intent: public_service_assessment
+      operation: supply_demand
+      tool_seq: [get_skill]
+
+  - id: plan_skill_供需
+    title: 技能：公共服务供需（命中「供需」技能词）
+    category: 技能
+    tier: plan
+    difficulty: normal
+    question: 分析深圳公共服务设施与人口的供需匹配
+    expected:
+      intent: public_service_assessment
+      operation: supply_demand
+
+  - id: plan_skill_create
+    title: 技能：技能创建任务（单步 get_skill 方法论引导）
+    category: 技能
+    tier: plan
+    difficulty: normal
+    question: 帮我把刚才这套餐饮分析方法做成一个技能
+    expected:
+      intent: skill-creator
+      tool_seq: [get_skill]
+      params:
+        targets: []
+        required_data: []
+
+  # ── 澄清 门1（意图模糊才追问） ────────────────────────────────────────
+  - id: plan_clarify_泛分析
+    title: 门1：泛分析请求缺对象 → 澄清
+    category: 澄清
+    tier: plan
+    difficulty: normal
+    question: 帮我对这个片区做一个分析
+    expected:
+      operation: clarify
+      clarify: true
+
+  - id: plan_clarify_对比
+    title: 门1：无主语的对比
+    category: 澄清
+    tier: plan
+    difficulty: normal
+    question: 对比一下
+    expected:
+      operation: clarify
+      clarify: true
+
+  - id: plan_clarify_设施情况
+    title: 门1：看设施但没给维度
+    category: 澄清
+    tier: plan
+    difficulty: normal
+    question: 看看这个片区的设施情况
+    expected:
+      operation: clarify
+      clarify: true
+
+  - id: plan_clarify_半句
+    title: 门1：说话说一半
+    category: 澄清
+    tier: plan
+    difficulty: normal
+    question: 我想了解一下深圳的…
+    expected:
+      operation: clarify
+      clarify: true
+
+  # ── 缺数据 门2（平台没有的分析对象 → 不进 clarify，照常计划 + 缺失标记） ──
+  - id: plan_missing_人群画像
+    title: 门2：人群画像（人口域提示 → 确定性拦缺）
+    category: 缺数据
+    tier: plan
+    difficulty: normal
+    question: 分析深圳的人群画像
+    expected:
+      clarify: false
+      missing_data: ["人群"]
+
+  - id: plan_missing_人口密度
+    title: 门2：人口密度（无人口图层）
+    category: 缺数据
+    tier: plan
+    difficulty: normal
+    question: 做一下深圳的人口密度分析
+    expected:
+      operation: density
+      clarify: false
+      missing_data: ["人口"]
+
+  - id: plan_missing_共享单车
+    title: 门2：共享单车投放点（无对应图层）
+    category: 缺数据
+    tier: plan
+    difficulty: normal
+    question: 分析深圳共享单车投放点的分布密度
+    expected:
+      clarify: false
+      missing_data: ["共享单车"]
+
+  - id: plan_missing_外卖
+    title: 门2：外卖骑手服务范围
+    category: 缺数据
+    tier: plan
+    difficulty: normal
+    question: 分析深圳外卖骑手的服务范围覆盖
+    expected:
+      clarify: false
+      missing_data: ["外卖"]
+
+  - id: plan_missing_乱停乱放
+    title: 门2：乱停乱放（已知非图层数据标签）
+    category: 缺数据
+    tier: plan
+    difficulty: normal
+    question: 分析深圳街区的乱停乱放情况
+    expected:
+      clarify: false
+      missing_data: ["乱停乱放"]
+
+  # ── 参数解析（targets / distance） ────────────────────────────────────
+  - id: plan_param_餐饮500
+    title: 参数：餐饮 500 米
+    category: 参数
+    tier: plan
+    difficulty: easy
+    question: 深圳餐饮POI周边500米的服务范围分析
+    expected:
+      operation: coverage
+      params:
+        distance: {$range: [500, 500]}
+        targets: {$contains: ["poi_餐饮"]}
+
+  - id: plan_param_医院公园800
+    title: 参数：医院 + 公园多目标 800 米
+    category: 参数
+    tier: plan
+    difficulty: normal
+    question: 分析深圳医院和公园800米内的覆盖情况
+    expected:
+      operation: coverage
+      params:
+        distance: {$range: [800, 800]}
+        targets: {$contains: ["poi_医疗保健", "poi_风景名胜"]}
+
+  - id: plan_param_地铁500
+    title: 参数：地铁站 500 米
+    category: 参数
+    tier: plan
+    difficulty: easy
+    question: 深圳地铁站点周边500米的覆盖范围
+    expected:
+      operation: coverage
+      params:
+        distance: {$range: [500, 500]}
+        targets: {$contains: ["poi_交通设施"]}
+
+  - id: plan_param_银行300
+    title: 参数：银行网点 300 米
+    category: 参数
+    tier: plan
+    difficulty: easy
+    question: 银行网点周边300米的覆盖分析
+    expected:
+      operation: coverage
+      params:
+        distance: {$range: [300, 300]}
+        targets: {$contains: ["poi_金融保险"]}
+
+  - id: plan_param_学校1000
+    title: 参数：学校 1000 米（解析到图层 or 标缺，OR 断言）
+    category: 参数
+    tier: plan
+    difficulty: easy
+    question: 深圳学校1000米覆盖范围分析
+    expected:
+      operation: coverage
+      params:
+        distance: {$range: [1000, 1000]}
+      objects:
+        - {layer: "poi_科教文化", words: ["学校"]}
+
+  # ── 多轮历史（PydanticAI UserPromptPart 路径） ────────────────────────
+  - id: plan_hist_再分析医院
+    title: 历史：再分析医院（沿用覆盖意图）
+    category: 历史
+    tier: plan
+    difficulty: normal
+    question: 再分析一下医院
+    history:
+      - {role: user, content: 帮我分析深圳学校的800米覆盖率}
+      - {role: assistant, content: 已按800米服务半径完成学校覆盖分析，结论见结果卡片。}
+    expected:
+      operation: coverage
+      intent: coverage
+      params:
+        targets: {$contains: ["poi_医疗保健"]}
+
+  - id: plan_hist_换个方法
+    title: 历史：换个方法（操作切换）
+    category: 历史
+    tier: plan
+    difficulty: normal
+    question: 换个方法再试试
+    history:
+      - {role: user, content: 分析深圳餐饮POI的800米覆盖率}
+      - {role: assistant, content: 已按800米完成覆盖率分析。}
+    expected:
+      clarify: false
+      operation: coverage|nearest_distance|density|kernel_density|overlay|supply_demand|general
+
+  - id: plan_hist_纠偏
+    title: 历史：误导性纠偏（不是餐饮，是公园）
+    category: 历史
+    tier: plan
+    difficulty: normal
+    question: 我说错了，我要的是公园不是餐饮
+    history:
+      - {role: user, content: 帮我分析深圳餐饮POI的800米覆盖率}
+      - {role: assistant, content: 已按800米完成餐饮POI覆盖率分析。}
+    expected:
+      operation: coverage
+      objects:
+        - {layer: "poi_风景名胜", words: ["公园"]}
+
+  - id: plan_hist_继续授权
+    title: 历史：澄清后授权「继续」（防重复追问）
+    category: 历史
+    tier: plan
+    difficulty: hard
+    question: 继续
+    history:
+      - {role: user, content: 帮我做深圳餐饮覆盖分析}
+      - {role: assistant, content: 请问按多大距离分析？}
+      - {role: user, content: 按默认来吧，开始}
+    expected:
+      clarify: false
+      operation: coverage
+
+  - id: plan_hist_公交等时圈
+    title: 历史：地铁→公交等时圈追问
+    category: 历史
+    tier: plan
+    difficulty: hard
+    question: 那公交站呢
+    history:
+      - {role: user, content: 算一下地铁站步行10分钟内的可达范围}
+      - {role: assistant, content: 已按10分钟步行生成地铁站等时圈。}
+    expected:
+      operation: general|nearest_distance|coverage
+      tool_seq: [isochrone]
+
+  # ── 边界 / 健壮性 ─────────────────────────────────────────────────────
+  - id: plan_edge_负距离
+    title: 边界：负距离（clamp 到 100 或 LLM 取绝对值，二者皆可）
+    category: 边界
+    tier: plan
+    difficulty: hard
+    question: 用-500米的缓冲半径分析餐饮覆盖
+    expected:
+      operation: coverage
+      params:
+        distance: {$range: [100, 500]}
+
+  - id: plan_edge_超远距离
+    title: 边界：100 公里超远距离（clamp 到 10000）
+    category: 边界
+    tier: plan
+    difficulty: hard
+    question: 分析深圳周边100公里范围内的餐饮覆盖
+    expected:
+      params:
+        distance: {$range: [10000, 10000]}
+
+  # ── 解释工具原理（复读兜底回归） ───────────────────────────────────────
+  - id: plan_explain_核密度
+    title: 解释：核密度原理（确定性解释覆盖退化 summary）
+    category: 路由
+    tier: plan
+    difficulty: normal
+    question: 核密度是什么，怎么算的？
+    expected:
+      operation: chat
+      intent: chat
+      answer_contains: ["核密度"]

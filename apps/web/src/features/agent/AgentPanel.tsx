@@ -77,12 +77,14 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
     [messages],
   )
 
-  // 底部工作状态（TypingFooter）：根据最后一条进行中的 agent 消息推断
+  // 底部工作状态（TypingFooter）：只标「进行中工具/代码」这类气泡细行没单独呈现的活动。
+  // 「正在理解问题… / 思考中…」这类通用思考状态已由消息气泡的思考行承担（含实时计时），
+  // 底部不再重复，避免一屏出现两个「正在思考」。
   const activeLabel = useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i]
       if (msg.role !== 'agent') continue
-      if (msg.status === 'loading') return '正在理解问题…'
+      if (msg.status === 'loading') continue // 气泡思考行已显示「正在理解问题…」
       if (msg.status !== 'streaming') continue
       const blocks = msg.blocks ?? []
       for (let j = blocks.length - 1; j >= 0; j--) {
@@ -92,7 +94,7 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
         }
         if (block.type === 'code' && block.status === 'running') return '正在执行代码…'
       }
-      return '思考中…'
+      // 无进行中的工具/代码：气泡思考行已显示「思考中…」，底部不重复
     }
     return null
   }, [messages])

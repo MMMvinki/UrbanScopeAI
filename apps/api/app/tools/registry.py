@@ -276,6 +276,45 @@ TOOLS: list[ToolSpec] = [
         },
     ),
     ToolSpec(
+        name="amap_call",
+        category="data",
+        description=(
+            "通过高德地图 Web 服务 API 获取中国数据（覆盖 OSM 在中国 POI 稀疏/无行政区边界的短板）。"
+            "command ∈ {poi_search, district, geocode, regeo}，params 为 JSON 字符串。\n"
+            "① poi_search 下载 POI（最常用）：mode ∈ {text, around, polygon}。"
+            "text=关键字+城市（keywords='肯德基' + city='深圳'）；"
+            "around=中心点周边（location=[经度,纬度] + radius 米，默认 3000，WGS-84）；"
+            "polygon=按范围框下载（bbox=[西,南,东,北]，types 给高德行业分类码如 050000 餐饮服务，"
+            "超过单次上限自动分块全量爬取）。keyword 与 types 至少给一个；"
+            "下载结果必然落盘到 .workdir/amap/，output 有 path 字段，立即用 register_layer 发布成地图图层。\n"
+            "② district 下载行政区边界：keywords='深圳市'/'南山区' + subdistrict=0（本级）或 1（下一级），"
+            "返回 WGS-84 多边形 GeoJSON，落盘后 register_layer 发布（高德边界只到区县一级）。\n"
+            "③ geocode 地址转坐标：address='深圳市南山区科技园' + city（可选），返回 WGS-84 经纬度，"
+            "用作分析中心点（如等时圈/周边搜索的中心，比 OSM search 更准）。\n"
+            "④ regeo 坐标转地址：location=[经度,纬度]，返回行政区划与地址描述。\n"
+            "**坐标系约定**：所有坐标统一 WGS-84（与平台图层一致），自动转高德 GCJ-02；结果属性保留 gcj02_lng/gcj02_lat 原值。"
+        ),
+        display_description=(
+            "从高德地图获取中国 POI、行政区边界、地理编码数据（中国数据比 OSM 完整）。"
+        ),
+        status="ready",
+        parameters={
+            "command": "poi_search|district|geocode|regeo",
+            "params": "JSON 字符串，如 '{\"mode\":\"polygon\",\"bbox\":[113.9,22.5,114.2,22.6],\"types\":\"050000\"}'",
+        },
+        json_schema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "高德命令：poi_search/district/geocode/regeo"},
+                "params": {
+                    "type": "string",
+                    "description": "JSON 字符串参数。poi_search 需要 mode + (keywords|types) + 范围（text 要 city，around 要 location/radius，polygon 要 bbox）；district 要 keywords；geocode 要 address；regeo 要 location。",
+                },
+            },
+            "required": ["command"],
+        },
+    ),
+    ToolSpec(
         name="datasource_call",
         category="data",
         description="从预置 catalog 获取行政区划等公开 GeoJSON 数据。command ∈ {list, get, fetch}，params 为 JSON 字符串。",

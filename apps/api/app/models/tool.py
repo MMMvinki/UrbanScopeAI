@@ -24,6 +24,10 @@ class ToolSpec(BaseModel):
     # 完整 JSON Schema（OpenAI function calling 格式）：LLM Agent 工具调用契约。
     # 注册表是唯一事实源，llm_executor 据此动态生成 tool schemas，避免手写漂移。
     json_schema: dict[str, object] | None = None
+    # 是否在 /tools 用户货架展示。False = 仅 Agent 内部实现（如技能 CRUD），
+    # 不向用户暴露为可点卡片，但仍在 TOOLS / Executor 面保留供 Agent 调用。
+    # 缺省 True，老工具 / GIS 工具零感知。
+    user_visible: bool = True
 
 
 class ToolCall(BaseModel):

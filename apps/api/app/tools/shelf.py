@@ -98,6 +98,10 @@ def catalog_tools(bridge: object | None = None) -> list[ToolSpec]:
 
     local: list[ToolSpec] = []
     for spec in TOOLS:
+        # user_visible=False 的工具（技能 CRUD / 脚本库等 Agent 内部实现）不上货架。
+        # 仅影响 /tools 展示；TOOLS 本体、TOOL_IMPLEMENTATIONS、Executor 工具面不受影响。
+        if not spec.user_visible:
+            continue
         # description 是写给 LLM 的完整配方（含坑/路径约定）；货架给人看用白话版。
         # LLM 侧 _tool_lines/_tool_schemas 直接读 TOOLS 原始 description，不受影响。
         user_desc = spec.display_description or spec.description

@@ -18,9 +18,18 @@ def register(provider: DataProvider) -> None:
 
 def get_provider(provider_id: str) -> DataProvider:
     if provider_id not in _registry:
-        from app.providers.osm.osm_call import OSMProvider
+        if provider_id == "osm":
+            from app.providers.osm.osm_call import OSMProvider
 
-        register(OSMProvider())
+            register(OSMProvider())
+        elif provider_id == "amap":
+            from app.providers.amap.amap_call import AMapProvider
+
+            register(AMapProvider())
+        elif provider_id == "datasource":
+            from app.providers.datasource.datasource_call import DatasourceProvider
+
+            register(DatasourceProvider())
     if provider_id not in _registry:
         raise KeyError(f"未知数据 provider：{provider_id}")
     return _registry[provider_id]

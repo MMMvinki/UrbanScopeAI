@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from typing import Iterator
 
-from app.models.layer import GeometryType
+from app.models.layer import FieldSpec, GeometryType
 
 
 def clean_layer_id(raw: str) -> str:
@@ -64,3 +64,30 @@ def load_feature_collection(data: dict) -> tuple[list[dict], set[str], list[floa
                 ys.append(y)
     bbox = [min(xs), min(ys), max(xs), max(ys)] if xs else None
     return features, geometry_types, bbox
+
+
+def build_fields_from_features(features: list[dict]) -> list[FieldSpec]:
+    """从要素 properties 键并集推断字段列表（供手绘/无 schema 图层入库）。
+
+    按 Python 类型映射 GeoJSON 字段 type：int/float→number、bool→boolean、
+    str→string、缺省 None→string。字段顺序按首次出现序；跳过 Terra Draw 内部键
+    （mode/midPoint/selectionPoint/selected/id），避免中间态污染图层 schema。
+    """
+    reserved = {"mode", "midpoint", "midPoint", "selectionpoint", "selectionPoint", "selected", "id"}
+    fields: list[FieldSpec] = []
+    seen: set[str] = set()
+    for feature in features:
+        props = feature.get("properties") or {}
+        for key in props:
+            if key in reserved or key in seen:
+                continue
+            seen.add(key)
+            value = props[key]
+            if isinstance(value, bool):
+                ftype = "boolean"
+            elif isinstance(value, (int, float)):
+                ftype = "number"
+            else:
+                ftype = "string"
+            fields.append(FieldSpec(name=key, type=ftype))
+    return fields

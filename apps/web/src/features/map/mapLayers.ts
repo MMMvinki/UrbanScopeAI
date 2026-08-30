@@ -459,7 +459,8 @@ export function styleSpecFor(layer: LayerMetadata, style?: LayerStyle): LayerSpe
   const stroke = style?.strokeColor ?? layer.color
   const strokeWidth = style?.strokeWidth ?? 1
   const radius = style?.radius ?? 5
-  const opacity = style?.opacity ?? (layer.source === 'generated' ? 0.27 : 0.51)
+  // 默认不透明度 0.8（用户要求：不要太透明，约 80%）。生成/普通图层一视同仁。
+  const opacity = style?.opacity ?? 0.8
 
   if (layer.geometry === 'Point') {
     return {

@@ -20,6 +20,12 @@ import {
 } from './mapLayers'
 import { buildDeckLayers } from './deckLayers'
 import { MapSchematic } from './MapSchematic'
+import { TerraDrawController, geometryTypeFromFeatures } from './DrawController'
+import type { DrawMode } from './DrawController'
+import type { AutoUnitConfig } from './geodesic'
+import { MapDrawToolbar } from './MapDrawToolbar'
+import { DrawnAttributesPanel } from './DrawnAttributesPanel'
+import type { FieldSpec, GeometryType } from '../layers/layerTypes'
 
 /**
  * WebGL2 预探测：MapLibre 在 `new Map()` 构造器内**同步**初始化 painter，
@@ -34,6 +40,15 @@ let cachedWebgl: boolean | null = null
  * 未配置时 Mapbox 底图不会出现在列表，地图回退免 token 的 OpenFreeMap 样式。
  */
 const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined
+
+/** 图层 id 随手绘名字生成：保留中英文、数字、下划线，其余替换为下划线（后端 clean_layer_id 会再次清洗） */
+function slugify(value: string): string {
+  const slug = value
+    .trim()
+    .replace(/[^\p{L}\p{N}_-]+/gu, '_')
+    .replace(/^_+|_+$/g, '')
+  return slug || 'drawn'
+}
 
 function webgl2Available(): boolean {
   if (cachedWebgl !== null) return cachedWebgl
@@ -72,12 +87,38 @@ export function MapWorkspace() {
   // 3D 建筑开关：OpenFreeMap planet 矢量建筑 fill-extrusion 挤出，叠加在任意底图上
   const [show3D, setShow3D] = useState(false)
 
+  // —— 手绘图层（Terra Draw）状态 ——
+  // drawActive：绘制工具栏已展开；drawMode：当前绘制/编辑模式；
+  // drawPending：点击「完成」后收集到的要素，待属性面板确认创建；drawHasFeatures：是否有已绘要素。
+  const [drawActive, setDrawActive] = useState(false)
+  const [drawMode, setDrawMode] = useState<DrawMode>('point')
+  const [drawPending, setDrawPending] = useState<{
+    features: GeoJSON.Feature[]
+    geometryType: GeometryType
+    color: string
+  } | null>(null)
+  const [drawHasFeatures, setDrawHasFeatures] = useState(false)
+  // 撤销/重做可用性：撤销栈变化时由控制器 onHistory 回调写入，供工具栏按钮判 enable
+  const [drawCanUndo, setDrawCanUndo] = useState(false)
+  const [drawCanRedo, setDrawCanRedo] = useState(false)
+  // 编辑会话：非空=当前正在编辑已建手绘图层（完成时走 PUT 而非 POST /layers/draw）
+  const [editLayerId, setEditLayerId] = useState<string | null>(null)
+  const drawControllerRef = useRef<TerraDrawController | null>(null)
+  const drawColorRef = useRef('#0F172A')
+  const startDrawRef = useRef<() => void>(() => {})
+  const editStartRef = useRef<(id: string) => void>(() => {})
+
   const layers = useAppStore((s) => s.layers)
   const layerStyles = useAppStore((s) => s.layerStyles)
   const geojsonTick = useAppStore((s) => s.geojsonTick)
   const focusTarget = useAppStore((s) => s.focusTarget)
   const basemapId = useAppStore((s) => s.basemapId)
   const setBasemapId = useAppStore((s) => s.setBasemapId)
+  const addDrawnLayer = useAppStore((s) => s.addDrawnLayer)
+  const updateDrawnLayerGeojson = useAppStore((s) => s.updateDrawnLayerGeojson)
+  const focusLayer = useAppStore((s) => s.focusLayer)
+  const drawRequestTick = useAppStore((s) => s.drawRequestTick)
+  const editLayerRequest = useAppStore((s) => s.editLayerRequest)
 
   // 当前生效底图：Mapbox 底图但没配 token → 回退默认（避免无 token 的栅格 URL 白图）
   const activeBasemap = BASEMAPS.find((b) => b.id === basemapId) ?? BASEMAPS[0]
@@ -450,16 +491,232 @@ export function MapWorkspace() {
     }
   }, [focusTarget, layers])
 
+  // —— 手绘图层交互处理 ——
+  // 惰性创建控制器；onChange 更新已绘要素数（完成按钮判定），onHistory 更新撤销/重做可用态
+  const ensureController = (): TerraDrawController | null => {
+    const map = mapRef.current
+    if (!map) return null
+    if (!drawControllerRef.current) {
+      drawControllerRef.current = new TerraDrawController(
+        map,
+        (fc) => setDrawHasFeatures(fc.features.length > 0),
+        (canUndo, canRedo) => {
+          setDrawCanUndo(canUndo)
+          setDrawCanRedo(canRedo)
+        },
+      )
+    }
+    return drawControllerRef.current
+  }
+
+  const startDraw = () => {
+    const controller = ensureController()
+    if (!controller) return
+    // 新建会话：重置撤销栈（上一会话若取消过会残留），避免 undo 作用到已废弃要素
+    controller.resetHistory()
+    controller.setMode('point')
+    setDrawMode('point')
+    setEditLayerId(null)
+    setDrawActive(true)
+    setDrawHasFeatures(false)
+    setDrawCanUndo(false)
+    setDrawCanRedo(false)
+  }
+
+  // 编辑已建手绘图层：载入已有几何 → 进入 select 拖拽顶点
+  const startEditLayer = (layerId: string) => {
+    const controller = ensureController()
+    const layer = layers.find((item) => item.id === layerId)
+    if (!controller || !layer) return
+    controller.load(getLayerGeojson(layer).features)
+    controller.setMode('select')
+    // 载入后自动选中首个要素：进编辑即出手柄，省去用户先点形状这一步
+    controller.selectFirstFeature()
+    setDrawMode('select')
+    setEditLayerId(layerId)
+    setDrawActive(true)
+    setDrawHasFeatures(true)
+    setDrawCanUndo(false)
+    setDrawCanRedo(false)
+  }
+
+  const changeDrawMode = (mode: DrawMode) => {
+    // 允许 select（编辑）：会话内切「编辑」即可选中要素拖顶点
+    drawControllerRef.current?.setMode(mode)
+    setDrawMode(mode)
+  }
+
+  // 「完成」：收集要素 → 停止绘制（避免与 deck 真实图层双渲染）。
+  // 编辑会话走 PUT 更新已建图层几何；新建会话打开属性面板（命名/单位/字段）。
+  const finishDraw = () => {
+    const controller = drawControllerRef.current
+    if (!controller) return
+    const fc = controller.collect()
+    controller.stop()
+    setDrawActive(false)
+    setDrawCanUndo(false)
+    setDrawCanRedo(false)
+    if (fc.features.length === 0) return
+    if (editLayerId) {
+      const targetId = editLayerId
+      const layer = layers.find((item) => item.id === targetId)
+      // 编辑：按该图层存的单位重算自动字段，PUT 持久化。fields 交给后端按注入后 properties 重建
+      void updateDrawnLayerGeojson({
+        id: targetId,
+        features: fc.features,
+        units: layer?.units ?? undefined,
+      }).then((res) => {
+        setEditLayerId(null)
+        if (res) {
+          focusLayer(targetId)
+        } else {
+          window.alert('保存失败：图层几何未更新。请重试或检查图层是否已改为只读。')
+        }
+      })
+      return
+    }
+    const geometryType = geometryTypeFromFeatures(fc.features)
+    setDrawPending({ features: fc.features, geometryType, color: drawColorRef.current })
+  }
+
+  // 属性面板「确认创建」：经后端注册（persist）→ addDrawnLayer 上屏
+  const confirmDrawnLayer = async (input: {
+    name: string
+    features: GeoJSON.Feature[]
+    fields: FieldSpec[]
+    units: AutoUnitConfig
+  }) => {
+    const geometryType = geometryTypeFromFeatures(input.features)
+    const res = await addDrawnLayer({
+      id: slugify(input.name),
+      name: input.name,
+      geometry: geometryType,
+      color: drawColorRef.current,
+      features: input.features,
+      fields: input.fields,
+      crs: 'EPSG:4326',
+      persist: true,
+      units: input.units,
+    })
+    setDrawPending(null)
+    if (res) {
+      // 创建成功：地图飞到新图层（若在视野外）
+      focusLayer(res.layerId)
+    }
+  }
+
+  // 「取消」（工具栏或属性面板）：清空绘制并注销控制器，不持久化
+  const cancelDraw = () => {
+    drawControllerRef.current?.stop()
+    setDrawActive(false)
+    setDrawPending(null)
+    setEditLayerId(null)
+    setDrawHasFeatures(false)
+    setDrawCanUndo(false)
+    setDrawCanRedo(false)
+  }
+
+  // 面板「新建绘制」请求：drawRequestTick 递增 → 进入绘制会话
+  // startDraw 每次渲染重建，用 ref 恒指向最新闭包，避免把函数放进依赖数组触发重跑
+  useEffect(() => {
+    startDrawRef.current = startDraw
+  })
+  useEffect(() => {
+    if (drawRequestTick > 0) startDrawRef.current()
+  }, [drawRequestTick])
+
+  // 图层面板「编辑」请求：editLayerRequest 写入 → 进入编辑会话
+  useEffect(() => {
+    editStartRef.current = startEditLayer
+  })
+  useEffect(() => {
+    if (editLayerRequest) editStartRef.current(editLayerRequest.layerId)
+  }, [editLayerRequest])
+
+  // 撤销/重做快捷键：绘制/编辑会话内监听 Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z。
+  // capture 阶段 + 非输入框才拦截，避免劫持浏览器在 input 内的撤销；未进入绘制会话不挂监听。
+  useEffect(() => {
+    if (!drawActive) return
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (!target) return
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return
+      if (!(event.ctrlKey || event.metaKey)) return
+      const key = event.key.toLowerCase()
+      if (key === 'z') {
+        event.preventDefault()
+        if (event.shiftKey) drawControllerRef.current?.redo()
+        else drawControllerRef.current?.undo()
+      } else if (key === 'y') {
+        event.preventDefault()
+        drawControllerRef.current?.redo()
+      }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [drawActive])
+
+  // 组件卸载时注销控制器（释放 adapter 渲染的图层与地图交互）
+  useEffect(() => {
+    return () => {
+      drawControllerRef.current?.stop()
+      drawControllerRef.current = null
+    }
+  }, [])
+
+  // —— 绘制会话期间保持地图「不可拖动」——
+  // maplibre 在 dragPan 开启时，每次 mousemove 都会把 canvas 光标强制改回 'grab'（覆盖
+  // TerraDraw 的 crosshair），且真机拖动会把点击变成平移。因此绘制期间关闭 dragPan/dragRotate，
+  // 并持续兜底（TerraDraw 拖动结束会自动重新 enable dragPan）保证全程关闭，退出绘制再恢复。
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (!drawActive) {
+      map.dragPan.enable()
+      map.dragRotate.enable()
+      map.doubleClickZoom.enable()
+      return
+    }
+    map.dragPan.disable()
+    map.dragRotate.disable()
+    map.doubleClickZoom.disable()
+    let raf = 0
+    const keepDisabled = () => {
+      if (map.dragPan.isEnabled()) map.dragPan.disable()
+      if (map.dragRotate.isEnabled()) map.dragRotate.disable()
+      // 双击缩放同样会劫持「双击闭合」手势，保持关闭
+      if (map.doubleClickZoom.isEnabled()) map.doubleClickZoom.disable()
+      raf = requestAnimationFrame(keepDisabled)
+    }
+    raf = requestAnimationFrame(keepDisabled)
+    return () => {
+      cancelAnimationFrame(raf)
+    }
+  }, [drawActive])
+
   const visibleCount = layers.filter((layer) => layer.visible).length
 
   return (
-    <section className="map-workspace" aria-label="地图工作区">
+    <section className={`map-workspace${drawActive ? ' is-drawing' : ''}`} aria-label="地图工作区">
       <div className="map-toolbar">
         <span className="map-toolbar__title">
           <Layers aria-hidden="true" />
           地图图层
         </span>
         <span className="map-toolbar__controls">
+          <MapDrawToolbar
+            active={drawActive}
+            mode={drawMode}
+            hasFeatures={drawHasFeatures}
+            canUndo={drawCanUndo}
+            canRedo={drawCanRedo}
+            onStart={startDraw}
+            onModeChange={changeDrawMode}
+            onFinish={finishDraw}
+            onCancel={cancelDraw}
+            onUndo={() => drawControllerRef.current?.undo()}
+            onRedo={() => drawControllerRef.current?.redo()}
+          />
           <label className="map-toolbar__basemap">
             <span className="map-toolbar__basemap-label">底图</span>
             <select
@@ -505,6 +762,15 @@ export function MapWorkspace() {
         </span>
       </div>
       <div className="map-canvas" ref={containerRef}>
+        {drawPending && (
+          <DrawnAttributesPanel
+            features={drawPending.features}
+            geometryType={drawPending.geometryType}
+            color={drawPending.color}
+            onCancel={cancelDraw}
+            onConfirm={confirmDrawnLayer}
+          />
+        )}
         {webglError && (
           <div className="map-fallback">
             <MapSchematic layers={layers} styles={layerStyles} />

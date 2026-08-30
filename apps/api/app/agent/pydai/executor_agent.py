@@ -186,7 +186,7 @@ def _assemble(
                     result_group=None,
                     evidence=[],
                     reflection="纯地图控制/样式类 run：工具事件已实时下发到地图，无分析成果卡。",
-                    final_answer=llm_executor._last_text(trace),
+                    final_answer=conclusion or llm_executor._last_text(trace),
                 )
             if any(e.type == "text" for e in trace[3:]):
                 # 组不出成果卡但有 Agent 文字产出（咨询/解释/说明性回应）
@@ -196,7 +196,7 @@ def _assemble(
                     result_group=None,
                     evidence=[],
                     reflection="Agent 已给出文字说明但未形成结果图层/成果卡（咨询、解释或执行未落成图层）。",
-                    final_answer=llm_executor._last_text(trace),
+                    final_answer=conclusion or llm_executor._last_text(trace),
                 )
             return None
         evidence: list[str] = []

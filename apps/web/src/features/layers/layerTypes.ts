@@ -1,5 +1,5 @@
-/** 图层来源：平台数据 / 用户上传 / 分析生成 */
-export type LayerSource = 'platform' | 'uploaded' | 'generated'
+/** 图层来源：平台数据 / 用户上传 / 分析生成 / 手绘 */
+export type LayerSource = 'platform' | 'uploaded' | 'generated' | 'drawn'
 
 export type GeometryType = 'Polygon' | 'Point' | 'LineString'
 
@@ -46,6 +46,8 @@ export interface LayerMetadata {
   styleMode?: string | null
   visualVariables?: VisualVariables | null
   labelField?: string | null
+  /** 手绘图层自动字段单位偏好：{length:'m'|'km', area:'m2'|'hm2'|'km2'} */
+  units?: { length?: 'm' | 'km'; area?: 'm2' | 'hm2' | 'km2' } | null
 }
 
 export type LayerAction =
@@ -56,6 +58,7 @@ export type LayerAction =
   | 'rename'
   | 'group'
   | 'preview'
+  | 'edit'
   | 'delete'
 
 /** 分档设色描述（后端算 breaks，前端按要素取色） */

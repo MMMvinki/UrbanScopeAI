@@ -2,6 +2,13 @@ import type { LayerMetadata, LayerStyle } from '../features/layers/layerTypes'
 import type { PlanningSkill } from '../features/skills/planningSkills'
 import type { ResultGroup } from '../features/results/resultTypes'
 import type {
+  EvalReportDetail,
+  EvalReportSummary,
+  EvalRunStatus,
+  EvalSetDetail,
+  EvalSetSummary,
+} from '../features/eval/evalTypes'
+import type {
   AgentBlock,
   ChatTurn,
   DataCheckResult as ChatDataCheck,
@@ -39,7 +46,7 @@ export const patchLayerStyle = (layerId: string, patch: Record<string, unknown>)
 export interface BackendLayer {
   id: string
   name: string
-  source: 'platform' | 'uploaded' | 'generated'
+  source: 'platform' | 'uploaded' | 'generated' | 'drawn'
   geometry: 'Polygon' | 'Point' | 'LineString'
   color: string
   visible?: boolean
@@ -65,6 +72,8 @@ export interface BackendLayer {
   styleMode?: string | null
   visualVariables?: Record<string, unknown> | null
   labelField?: string | null
+  /* 手绘图层自动字段单位偏好 */
+  units?: { length?: 'm' | 'km'; area?: 'm2' | 'hm2' | 'km2' } | null
 }
 
 export interface ToolSpec {
@@ -345,6 +354,55 @@ export interface StagedUpload {
   size: number
 }
 
+/** 手绘点/线/面 → 注册为图层（POST /layers/draw）。返回后端图层元数据。 */
+export async function drawLayer(body: {
+  layer_id?: string
+  name: string
+  crs?: string
+  color?: string
+  geojson: GeoJSON.FeatureCollection
+  fields?: Array<{ name: string; type: string; description?: string | null }>
+  units?: { length?: 'm' | 'km'; area?: 'm2' | 'hm2' | 'km2' } | null
+}): Promise<{ layer_id: string; name: string; feature_count: number; geometry_types: string[]; bbox: number[] | null }> {
+  const response = await fetch(`${API_BASE}/layers/draw`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(detail ? `创建失败：${detail}` : `API ${response.status} /layers/draw`)
+  }
+  return (await response.json()) as {
+    layer_id: string
+    name: string
+    feature_count: number
+    geometry_types: string[]
+    bbox: number[] | null
+  }
+}
+
+/** 保存编辑后的手绘图层几何（PUT /layers/{id}/geojson）。返回后端图层元数据。 */
+export async function updateLayerGeojson(
+  layerId: string,
+  body: {
+    geojson: GeoJSON.FeatureCollection
+    fields?: Array<{ name: string; type: string; description?: string | null }>
+    units?: { length?: 'm' | 'km'; area?: 'm2' | 'hm2' | 'km2' }
+  },
+): Promise<BackendLayer> {
+  const response = await fetch(`${API_BASE}/layers/${layerId}/geojson`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(detail ? `保存失败：${detail}` : `API ${response.status} /layers/${layerId}/geojson`)
+  }
+  return (await response.json()) as BackendLayer
+}
+
 /** 暂存上传文件：只挂附件 chip，不上图层/不上地图。Agent 需要用时经 register_uploaded_file 创建图层。 */
 export async function stageUpload(file: File): Promise<StagedUpload> {
   const form = new FormData()
@@ -573,6 +631,7 @@ export function toLayer(layer: BackendLayer): LayerMetadata {
     styleMode: layer.styleMode ?? null,
     visualVariables: (layer.visualVariables as LayerStyle['visualVariables']) ?? null,
     labelField: layer.labelField ?? null,
+    units: layer.units ?? null,
   }
 }
 
@@ -732,3 +791,16 @@ export const promoteScriptToSkill = (body: { script_name: string; name?: string;
 export const fetchScripts = () => request<{ scripts: ScriptInfo[]; count: number }>('/scripts')
 export const fetchScript = (name: string) =>
   request<{ name: string; path: string; content: string }>(`/scripts/${encodeURIComponent(name)}`)
+
+/* ---------------- eval 评测管理（后台 /eval/*） ---------------- */
+
+export const fetchEvalSets = () => request<EvalSetSummary[]>('/eval/sets')
+export const fetchEvalSet = (name: string) =>
+  request<EvalSetDetail>(`/eval/sets/${encodeURIComponent(name)}`)
+export const fetchEvalReports = () => request<EvalReportSummary[]>('/eval/reports')
+export const fetchEvalReport = (id: string) =>
+  request<EvalReportDetail>(`/eval/reports/${encodeURIComponent(id)}`)
+export const triggerEvalRun = (body: { set: string; tier: string; exclude_dep?: boolean }) =>
+  request<{ run_id: string }>('/eval/run', { method: 'POST', body: JSON.stringify(body) })
+export const fetchEvalRun = (runId: string) =>
+  request<EvalRunStatus>(`/eval/runs/${encodeURIComponent(runId)}`)

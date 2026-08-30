@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { AppShell } from './components/AppShell'
+import { EvalAdminPage } from './features/eval/EvalAdminPage'
 import { AgentPanel } from './features/agent/AgentPanel'
 import { LayerPanel } from './features/layers/LayerPanel'
 import { ToolsPanel } from './features/tools/ToolsPanel'
@@ -31,6 +32,7 @@ export default function App() {
   // 点当前已激活图标 = toggle 左栏（展开↔收缩）；点其他图标 = 切面板并展开
   const handleNav = (key: NavKey) => {
     if (key === 'agent') toggleAgent()
+    else if (key === 'eval') setActiveNav('eval')
     else if (key === activeNav) toggleLeftPanel()
     else setActiveNav(key)
   }
@@ -43,6 +45,17 @@ export default function App() {
     results: <ResultsPanel />,
     // activeNav 的 'agent' 已被 handleNav 路由走（不进入 setActiveNav），此处排除
   }[activeNav as Exclude<NavKey, 'agent'>]
+
+  if (activeNav === 'eval') {
+    // 独立评测管理后台：整页替换 AppShell（与地图工作区分离），自带返回入口
+    return (
+      <>
+        <EvalAdminPage onExit={() => setActiveNav('data')} />
+        <ApprovalModal />
+        <UploadModal />
+      </>
+    )
+  }
 
   return (
     <>

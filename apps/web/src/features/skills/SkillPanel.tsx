@@ -1,26 +1,20 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { FormEvent, ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { ChangeEvent, ReactNode } from 'react'
 import {
   Boxes,
   ChevronRight,
-  FileCode2,
-  FilePlus,
+  FileUp,
   Play,
   RefreshCw,
   Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
-import {
-  fetchScripts,
-  fetchSkills,
-  promoteScriptToSkill,
-  type ScriptInfo,
-  type SkillSpec,
-} from '../../lib/api'
+import { fetchSkills, type SkillSpec } from '../../lib/api'
 import { useAppStore } from '../../store/useAppStore'
 import { PanelCollapseButton } from '../../components/PanelCollapseButton'
 import type { PlanningSkill } from './planningSkills'
+import type { SkillDetail } from './planningSkills'
 
 /* ---------------- 统一技能卡片模型（可执行 + 提示型合并，UI 不区分形态） ---------------- */
 
@@ -252,203 +246,86 @@ function SkillDetailView({
   )
 }
 
-/* ---------------- 列表：技能（统一一组）+ 脚本货架 ---------------- */
+/* ---------------- 列表：技能（统一一组） ---------------- */
 
 function SkillList({
   cards,
-  scripts,
   onView,
   onLaunch,
-  onCreate,
   onAiCreate,
-  onPromote,
-  busyId,
+  onImport,
 }: {
   cards: SkillCard[]
-  scripts: ScriptInfo[]
   onView: (card: SkillCard) => void
   onLaunch: (prompt: string) => void
-  onCreate: () => void
   onAiCreate: () => void
-  onPromote: (script: ScriptInfo) => void
-  busyId: string | null
+  onImport: () => void
 }) {
   return (
     <div className="op-list">
       <div className="op-list__section">
-        <h3 className="op-list__heading">
-          <Boxes aria-hidden="true" /> 技能
-          <span className="op-list__hint">可复用分析能力 · 查看方法论，发起分析或 @ 提及</span>
-          <button type="button" className="op-list__new" onClick={onAiCreate} title="让 Agent 按 skill-creator 方法论创建技能">
-            <Sparkles aria-hidden="true" /> AI 创建
-          </button>
-          <button type="button" className="op-list__new" onClick={onCreate}>
-            <FilePlus aria-hidden="true" /> 新建
-          </button>
-        </h3>
+        <div className="op-section-head">
+          <h3 className="op-section-head__title">
+            <Boxes aria-hidden="true" /> 技能
+          </h3>
+          <div className="op-section-head__actions">
+            <button type="button" className="op-list__new" onClick={onAiCreate} title="让 Agent 按 skill-creator 方法论引导创建技能">
+              <Sparkles aria-hidden="true" /> 创建技能
+            </button>
+            <button type="button" className="op-list__new" onClick={onImport} title="从 JSON 文件导入技能">
+              <FileUp aria-hidden="true" /> 导入
+            </button>
+          </div>
+        </div>
+        <p className="op-section-head__hint">可复用分析能力 · 查看方法论，发起分析或 @ 提及</p>
         {cards.length === 0 ? (
-          <p className="empty-state__hint">
-            暂无技能。点击「新建」创建一个，或让 Agent 跑一次分析后从脚本货架「提升为技能」沉淀。
-          </p>
+          <p className="empty-state__hint">暂无技能。点击「创建技能」交给 Agent 引导创建，或「导入」已有的技能 JSON。</p>
         ) : (
           cards.map((card) => (
             <SkillCardItem key={card.id} card={card} onView={onView} onLaunch={onLaunch} />
           ))
         )}
       </div>
-
-      <div className="op-list__section">
-        <h3 className="op-list__heading">
-          <FileCode2 aria-hidden="true" /> 脚本货架
-          <span className="op-list__hint">execute_code 每次执行自动归档，可一键提升为技能</span>
-        </h3>
-        {scripts.length === 0 ? (
-          <p className="empty-state__hint">脚本库为空。让 Agent 用 execute_code 跑一次分析后会出现在这里。</p>
-        ) : (
-          scripts.map((script) => (
-            <div className="op-script" key={script.name}>
-              <div className="op-script__body">
-                <span className="op-script__name">{script.name}</span>
-                {script.description ? <span className="op-script__desc">{script.description}</span> : null}
-                <span className="op-script__meta">
-                  {script.semantic_name} · step {script.step ?? '-'}
-                  {script.has_error ? ' · 有错误' : ''}
-                </span>
-              </div>
-              <button
-                type="button"
-                className="op-script__promote"
-                disabled={busyId === script.name}
-                onClick={() => onPromote(script)}
-                title="升级为可复用技能"
-              >
-                <Sparkles aria-hidden="true" /> {busyId === script.name ? '提升中…' : '提升为技能'}
-              </button>
-            </div>
-          ))
-        )}
-      </div>
     </div>
   )
 }
 
-const DEFAULT_WORKFLOW = ['数据准备', '指标计算 / 统计', '空间诊断', '结论生成']
-const DEFAULT_TOOLS = ['list_datasets', 'get_dataset_schema', 'statistics']
-
-/** 新建技能弹窗（前端本地，存 localStorage；与后端技能同卡片展示） */
-function PromptSkillForm({ onClose }: { onClose: () => void }) {
-  const addSkill = useAppStore((s) => s.addSkill)
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [requiredData, setRequiredData] = useState('')
-  const [prompt, setPrompt] = useState('')
-
-  const handleSubmit = (event: FormEvent) => {
-    event.preventDefault()
-    const trimmedName = name.trim()
-    if (!trimmedName) return
-    addSkill({
-      name: trimmedName,
-      description: description.trim() || '暂无描述',
-      requiredData: requiredData.trim() || '待补充',
-      prompt: prompt.trim() || `帮我执行 ${trimmedName}。`,
-      detail: {
-        dataRequirements: requiredData
-          .split(/[,，]/)
-          .map((item) => item.trim())
-          .filter(Boolean),
-        workflow: DEFAULT_WORKFLOW,
-        indicators: ['待补充'],
-        tools: DEFAULT_TOOLS,
-      },
-    })
-    onClose()
+/** 校验并归一化一个导入的 JSON 技能定义（单对象或数组中的一项）。
+ *  仅要求 name 非空即可导入；其余字段缺省时给出合理默认值。返回 null 表示该项不是有效技能。 */
+function normalizeImportedSkill(raw: unknown): Omit<PlanningSkill, 'id'> | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const name = typeof record.name === 'string' ? record.name.trim() : ''
+  if (!name) return null
+  const detailRaw = (record.detail && typeof record.detail === 'object' ? record.detail : {}) as Record<string, unknown>
+  const strArr = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  const dataRequirements = strArr(detailRaw.dataRequirements)
+  const detail: SkillDetail = {
+    dataRequirements,
+    workflow: strArr(detailRaw.workflow),
+    indicators: strArr(detailRaw.indicators),
+    tools: strArr(detailRaw.tools),
   }
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <form
-        className="modal modal--form"
-        role="dialog"
-        aria-modal="true"
-        aria-label="新建技能"
-        onClick={(event) => event.stopPropagation()}
-        onSubmit={handleSubmit}
-      >
-        <header className="modal__header">
-          <div className="modal__titles">
-            <h3 className="modal__title">新建技能</h3>
-            <p className="modal__desc">创建一个技能专题，将出现在技能面板与 Agent 中。</p>
-          </div>
-          <button type="button" className="icon-button icon-button--sm" onClick={onClose} aria-label="关闭">
-            <X aria-hidden="true" />
-          </button>
-        </header>
-
-        <div className="modal__body">
-          <label className="form-field">
-            <span className="form-field__label">名称 *</span>
-            <input
-              className="form-field__input"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              placeholder="例如：社区养老设施评估"
-              required
-            />
-          </label>
-          <label className="form-field">
-            <span className="form-field__label">描述</span>
-            <textarea
-              className="form-field__input"
-              value={description}
-              onChange={(event) => setDescription(event.target.value)}
-              placeholder="这个技能做什么"
-              rows={2}
-            />
-          </label>
-          <label className="form-field">
-            <span className="form-field__label">所需数据（逗号分隔）</span>
-            <input
-              className="form-field__input"
-              value={requiredData}
-              onChange={(event) => setRequiredData(event.target.value)}
-              placeholder="设施点位，人口分布，研究范围"
-            />
-          </label>
-          <label className="form-field">
-            <span className="form-field__label">触发提示词</span>
-            <textarea
-              className="form-field__input"
-              value={prompt}
-              onChange={(event) => setPrompt(event.target.value)}
-              placeholder="发起分析时发送给 Agent 的问题"
-              rows={2}
-            />
-          </label>
-        </div>
-
-        <footer className="modal__footer">
-          <button type="button" className="button button--ghost button--sm" onClick={onClose}>
-            取消
-          </button>
-          <span className="modal__footer-spacer" />
-          <button type="submit" className="button button--primary button--sm">
-            保存
-          </button>
-        </footer>
-      </form>
-    </div>
-  )
+  return {
+    name,
+    description: typeof record.description === 'string' ? record.description : '暂无描述',
+    prompt: typeof record.prompt === 'string' ? record.prompt : `帮我执行 ${name}。`,
+    requiredData:
+      typeof record.requiredData === 'string'
+        ? record.requiredData
+        : dataRequirements.join('，') || '待补充',
+    detail,
+  }
 }
 
-/** Skills 面板：统一「技能」分组（可执行 + 提示型同卡片）+ 脚本货架 */
+/** Skills 面板：统一「技能」分组（可执行 + 提示型同卡片） */
 export function SkillPanel() {
   const [skills, setSkills] = useState<SkillSpec[]>([])
-  const [scripts, setScripts] = useState<ScriptInfo[]>([])
   const [detailSkill, setDetailSkill] = useState<SkillCard | null>(null)
-  const [creatingPrompt, setCreatingPrompt] = useState(false)
-  const [busyId, setBusyId] = useState<string | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const promptSkills = useAppStore((s) => s.skills)
+  const addSkill = useAppStore((s) => s.addSkill)
   const removeSkill = useAppStore((s) => s.removeSkill)
   const setDraftMessage = useAppStore((s) => s.setDraftMessage)
   const toggleAgent = useAppStore((s) => s.toggleAgent)
@@ -457,9 +334,7 @@ export function SkillPanel() {
 
   const load = useCallback(async () => {
     try {
-      const [skillsData, scriptsData] = await Promise.all([fetchSkills(), fetchScripts()])
-      setSkills(skillsData)
-      setScripts(scriptsData.scripts ?? [])
+      setSkills(await fetchSkills())
     } catch {
       // 后端未启动：保持空态，下方提示
     }
@@ -493,16 +368,6 @@ export function SkillPanel() {
     return [...backend, ...local].sort((a, b) => a.name.localeCompare(b.name, 'zh'))
   }, [skills, promptSkills])
 
-  const doPromote = async (script: ScriptInfo) => {
-    setBusyId(script.name)
-    try {
-      await promoteScriptToSkill({ script_name: script.name, name: script.semantic_name || undefined })
-      await load()
-    } finally {
-      setBusyId(null)
-    }
-  }
-
   /** 发起分析：把触发语发给 Agent。可执行技能命中后若缺参数，由 Agent 追问补齐（不再前端填参）。 */
   const launch = (prompt: string) => {
     setDraftMessage(prompt)
@@ -525,6 +390,36 @@ export function SkillPanel() {
     if (detailSkill?.id === id) setDetailSkill(null)
   }
 
+  /** 「导入」：触发隐藏的文件选择框 */
+  const importSkill = () => fileInputRef.current?.click()
+
+  /** 读取用户选择的 JSON 文件，逐个归一化为本地技能并写入 store */
+  const onImportFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    event.target.value = '' // 允许再次选择同一文件
+    if (!file) return
+    file
+      .text()
+      .then((text) => {
+        const parsed: unknown = JSON.parse(text)
+        const rawList = Array.isArray(parsed) ? parsed : [parsed]
+        let imported = 0
+        for (const raw of rawList) {
+          const skill = normalizeImportedSkill(raw)
+          if (skill) {
+            addSkill(skill)
+            imported += 1
+          }
+        }
+        if (imported === 0) {
+          window.alert('导入失败：未找到有效技能。JSON 需包含 name 字段。')
+        } else {
+          window.alert(`已导入 ${imported} 个技能。`)
+        }
+      })
+      .catch(() => window.alert('导入失败：无法解析 JSON 文件。'))
+  }
+
   return (
     <div className="panel-content skills-panel">
       <header className="panel-header">
@@ -540,15 +435,22 @@ export function SkillPanel() {
       <div className="tools-scroll scroll-area">
         <SkillList
           cards={cards}
-          scripts={scripts}
           onView={setDetailSkill}
           onLaunch={launch}
-          onCreate={() => setCreatingPrompt(true)}
           onAiCreate={aiCreate}
-          onPromote={doPromote}
-          busyId={busyId}
+          onImport={importSkill}
         />
       </div>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden-file-input"
+        onChange={onImportFile}
+        aria-hidden="true"
+        tabIndex={-1}
+      />
 
       {detailSkill && (
         <SkillDetailView
@@ -558,7 +460,6 @@ export function SkillPanel() {
           onDelete={detailSkill.local ? () => deleteLocal(detailSkill.id) : undefined}
         />
       )}
-      {creatingPrompt && <PromptSkillForm onClose={() => setCreatingPrompt(false)} />}
     </div>
   )
 }

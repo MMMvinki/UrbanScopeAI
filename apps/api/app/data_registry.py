@@ -20,6 +20,50 @@ _SAMPLE_VALUES: dict[str, object] = {
     "integer": 0,
 }
 
+# ── 生成/上传图层自动配色 ────────────────────────────────────────────────
+# 统一定义在注册漏斗 register_generated：任何「未显式配色」的图层（color 仍是
+# models/layer.py 里的默认近黑 #0F172A）都被赋一个确定性、可区分、不透明的颜色。
+# 按几何类型分三组色板：点 / 线 / 面天然分属不同色系，肉眼一眼区分；
+# 组内按 layer_id 哈希取色，同一图层跨重启/跨会话颜色稳定，不同图层大概率不同色。
+_DEFAULT_COLOR = "#0F172A"  # LayerMetadata.color 的默认值（认定为「未配色」）
+
+_POINT_COLORS = [
+    "#2f6fba", "#e0822b", "#5ba300", "#b23a48", "#7b4397",
+    "#0f9b8e", "#c8a512", "#4a6fb0",
+]
+_LINE_COLORS = [
+    "#1f77b4", "#2ca02c", "#9467bd", "#8c564b", "#17becf",
+    "#e377c2", "#bcbd22", "#6b8e23",
+]
+_POLYGON_COLORS = [
+    "#7b9fd4", "#f0a35e", "#8fd18f", "#c37fb0", "#ffd92f",
+    "#66c7c7", "#f88a82", "#a6cee3",
+]
+_GEOMETRY_PALETTES: dict[str, list[str]] = {
+    "Point": _POINT_COLORS,
+    "LineString": _LINE_COLORS,
+    "Polygon": _POLYGON_COLORS,
+}
+
+
+def _fnv1a(text: str) -> int:
+    """确定性字符串哈希（与前端 mapLayers.hashString 同构：FNV-1a 32 位）。"""
+    h = 2166136261
+    for ch in text:
+        h ^= ord(ch)
+        h = (h * 16777619) & 0xFFFFFFFF
+    return h
+
+
+def auto_layer_color(layer_id: str, geometry: str) -> str:
+    """给「未显式配色」的图层一个确定性、与几何类型匹配、可区分的颜色。
+
+    点/线/面分属三组色板（保证跨类型一眼区分），组内按 layer_id 哈希取色
+    （同图层稳定、不同图层大概率不同色）。geometry 为 'Point'|'LineString'|'Polygon'。
+    """
+    palette = _GEOMETRY_PALETTES.get(geometry, _POLYGON_COLORS)
+    return palette[_fnv1a(f"{layer_id}:{geometry}") % len(palette)]
+
 
 class DataRegistry:
     def __init__(self) -> None:
@@ -129,6 +173,12 @@ class DataRegistry:
             inherit = {k: getattr(old, k) for k in _STYLE_KEYS if getattr(old, k, None) is not None}
             if inherit:
                 layer = layer.model_copy(update=inherit)
+        # 「未显式配色」的图层（color 仍是默认近黑）→ 自动赋确定性可区分色。
+        # 放在 inherit 之后：若旧图层已有真实配色，inherit 已把进来；只有真默认色才触发。
+        if (layer.color or "").upper() == _DEFAULT_COLOR.upper():
+            layer = layer.model_copy(
+                update={"color": auto_layer_color(layer.id, layer.geometry.value)}
+            )
         self._layers[layer.id] = layer
         self._schemas[layer.id] = self._build_schema(layer)
         if layer.id not in self._base_layer_ids:

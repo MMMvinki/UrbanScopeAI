@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 import type { AgentBlock, AgentMessage, PendingApproval, StepStatus } from '../features/agent/agentTypes'
-import type { LayerGroup, LayerMetadata, LayerStyle } from '../features/layers/layerTypes'
+import type { FieldSpec, GeometryType, LayerGroup, LayerMetadata, LayerStyle } from '../features/layers/layerTypes'
+import type { AutoUnitConfig } from '../features/map/geodesic'
+import { injectAutoFields } from '../features/map/geodesic'
 import type { PlanningSkill } from '../features/skills/planningSkills'
 import type { ResultGroup } from '../features/results/resultTypes'
 import { defaultSkills } from '../features/skills/planningSkills'
@@ -9,6 +11,7 @@ import {
   createProject as apiCreateProject,
   deleteLayer as apiDeleteLayer,
   deleteProject as apiDeleteProject,
+  drawLayer,
   executePlanStream,
   fetchActiveProject,
   fetchAllGeojson,
@@ -20,6 +23,7 @@ import {
   planQuestion,
   switchProject as apiSwitchProject,
   toDataCheck,
+  updateLayerGeojson,
   toLayer,
   toPlanningSkill,
   toResultGroup,
@@ -326,6 +330,11 @@ function formatArgs(args: Record<string, unknown>): string {
   }
 }
 
+/** 完成耗时：从 startedAt 打点到现在的毫秒数（未打点则 undefined，不展示） */
+function elapsedFrom(msg: AgentMessage): number | undefined {
+  return msg.startedAt != null ? Date.now() - msg.startedAt : undefined
+}
+
 /**
  * 把一条 SSE AgentEvent 增量折叠进目标消息；需要跨消息的副作用
  * （成果组入栏、权限弹窗）写入 side，由调用方一并 set。
@@ -575,6 +584,8 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
         status: 'done' as const,
         plan,
         finalAnswer,
+        // 完成耗时冻结：执行结束当下定值，后续重渲染不再增长
+        elapsedMs: elapsedFrom(msg),
         // 本运行对应的成果组 id：对话消息下方渲染「成果产物」chip 跳转用
         resultGroupId: group ? group.id : undefined,
         evidence: Array.isArray(event.data.evidence)
@@ -589,7 +600,7 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
       }
     }
     case 'stream_end':
-      return msg.status === 'done' ? msg : { ...msg, status: 'done' as const }
+      return msg.status === 'done' ? msg : { ...msg, status: 'done' as const, elapsedMs: elapsedFrom(msg) }
     case 'error':
       return {
         ...msg,
@@ -628,7 +639,7 @@ function markAgentStopped(agentId: string): void {
       const blocks = m.blocks?.length
         ? m.blocks
         : [{ type: 'text' as const, content: '已停止执行。', id: nextBlockId() }]
-      return { ...m, status: 'done' as const, streamMode: 'done' as const, blocks }
+      return { ...m, status: 'done' as const, streamMode: 'done' as const, blocks, elapsedMs: elapsedFrom(m) }
     }),
   }))
 }
@@ -693,7 +704,7 @@ async function runExecute(
   }
 }
 
-export type NavKey = 'project' | 'agent' | 'data' | 'tools' | 'skills' | 'results'
+export type NavKey = 'project' | 'agent' | 'data' | 'tools' | 'skills' | 'results' | 'eval'
 
 // 本地演示图层已随北京示例数据移除（2026-08-17）：地图图层全部由后端 /layers 下发。
 // 后端未启动时地图保持空（诚实呈现，绝不显示编造的演示假数据）。
@@ -759,6 +770,12 @@ interface AppState {
   projectLoading: boolean
   /** 地图定位目标 */
   focusTarget: FocusTarget | null
+  /** 手绘请求信号：面板「新建绘制」点击递增，MapWorkspace 监听后 startDraw */
+  drawRequestTick: number
+  requestDraw: () => void
+  /** 手绘图层编辑请求信号：图层面板「编辑」点击写入，MapWorkspace 监听后进入编辑会话 */
+  editLayerRequest: { layerId: string; ts: number } | null
+  requestEditDrawnLayer: (layerId: string) => void
   /** 分析页点击 Skill / Pattern 后生成待发送草稿 */
   draftMessage: string
   /** 待审批权限请求（execute_code 等 ASK 操作） */
@@ -797,6 +814,25 @@ interface AppState {
   removeLayer: (id: string) => Promise<void>
   /** Agent 生成图层事件到达时立即并入 store（无需等整个 run 结束），真实几何上屏 */
   addGeneratedLayer: (layerId: string) => Promise<void>
+  /** 手绘点/线/面 → 注册为图层并上屏（persist 时经后端 POST /layers/draw 持久化）。返回规范后的图层 id */
+  addDrawnLayer: (input: {
+    id: string
+    name: string
+    geometry: GeometryType
+    color: string
+    features: GeoJSON.Feature[]
+    fields?: FieldSpec[]
+    crs?: string
+    persist?: boolean
+    units?: AutoUnitConfig | null
+  }) => Promise<{ layerId: string } | null>
+  /** 编辑已建手绘图层：持久化编辑后的几何（PUT /layers/{id}/geojson），成功后更新 store 几何/字段/单位并重绘 */
+  updateDrawnLayerGeojson: (input: {
+    id: string
+    features: GeoJSON.Feature[]
+    fields?: FieldSpec[]
+    units?: AutoUnitConfig | null
+  }) => Promise<{ layerId: string } | null>
   renameLayer: (id: string, name: string) => void
   duplicateLayer: (id: string) => void
   updateLayerStyle: (id: string, style: Partial<LayerStyle>) => void
@@ -870,6 +906,8 @@ export const useAppStore = create<AppState>((set) => ({
   projectDetail: null,
   projectLoading: false,
   focusTarget: null,
+  drawRequestTick: 0,
+  editLayerRequest: null,
   draftMessage: '',
   pendingApproval: null,
   // 切导航 = 想看对应面板 → 顺带展开左栏（面板被收起时点导航项能重新唤出）
@@ -902,7 +940,8 @@ export const useAppStore = create<AppState>((set) => ({
     activeRunController = controller
     const userMessage: AgentMessage = { id: `m-${Date.now()}`, role: 'user', content }
     const agentId = `m-${Date.now() + 1}`
-    const placeholder: AgentMessage = { id: agentId, role: 'agent', status: 'loading' }
+    // startedAt 打点：整个「思考/处理」周期从发送即开始，实时计时「已思考 Xs」据此走
+    const placeholder: AgentMessage = { id: agentId, role: 'agent', status: 'loading', startedAt: Date.now() }
     set((state) => ({
       messages: [...state.messages, userMessage, placeholder],
       // 首条 user 消息 → 用其内容给会话命名（「新会话」占位名更新为真实问题）
@@ -1009,6 +1048,7 @@ export const useAppStore = create<AppState>((set) => ({
                 status: 'done',
                 streamMode: 'done',
                 blocks: [...(message.blocks ?? []), errorBlock],
+                elapsedMs: elapsedFrom(message),
               }
             : message,
         ),
@@ -1024,6 +1064,12 @@ export const useAppStore = create<AppState>((set) => ({
     if (!plan) return
     const controller = new AbortController()
     activeRunController = controller
+    // 门2「跳过该项」是延迟执行：重置计时起点，避免把用户盯着缺失面板的空等时间算进「已处理」
+    useAppStore.setState((state) => ({
+      messages: state.messages.map((m) =>
+        m.id === agentId ? { ...m, startedAt: Date.now(), elapsedMs: undefined } : m,
+      ),
+    }))
     try {
       const history = buildHistory(useAppStore.getState().messages)
       const accept = [...new Set(plan.unmet_targets)]
@@ -1298,6 +1344,106 @@ export const useAppStore = create<AppState>((set) => ({
       // 忽略：run 结束后的整段刷新会补齐
     }
   },
+  addDrawnLayer: async (input) => {
+    // 手绘图层：本地几何 + 元数据直接并入 store 上屏；persist 时先经后端注册拿规范 id。
+    // 与 addGeneratedLayer 不同，几何已在手（无需 fetch/ensureLayerGeojson）：
+    // 直接 setGeojsonEntry 写缓存 + geojsonTick+1，驱动 MapWorkspace 重跑 buildDeckLayers。
+    try {
+      const features = input.features
+      if (features.length === 0) return null
+      const fc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
+      // id 去重：撞已有图层 id 时追加后缀（仿 duplicateLayer 的 while exists 规则）
+      let layerId = input.id
+      let n = 2
+      while (useAppStore.getState().layers.some((layer) => layer.id === layerId)) {
+        layerId = `${input.id}_${n++}`
+      }
+      // persist：后端注册（清洗内部 properties 键、推断 fields、物化到磁盘）→ 取回规范 layer_id
+      let fields = input.fields
+      if (input.persist) {
+        const res = await drawLayer({
+          // 传去重后的 layer_id：后端 clean_layer_id 以此为 id，避免同名重复创建时互相覆盖
+          layer_id: layerId,
+          name: input.name,
+          crs: input.crs,
+          color: input.color,
+          geojson: fc,
+          fields,
+          units: input.units ?? undefined,
+        })
+        layerId = res.layer_id
+        fields = undefined // 后端已算好 fields（以注册结果为准）
+      }
+      const collection = { ...fc, features }
+      setGeojsonEntry(layerId, collection)
+      const mapped: LayerMetadata = {
+        id: layerId,
+        name: input.name || layerId,
+        source: 'drawn',
+        geometry: input.geometry,
+        color: input.color,
+        visible: true,
+        featureCount: features.length,
+        crs: input.crs ?? 'EPSG:4326',
+        fields,
+        readonly: false,
+        lazy: false,
+        kind: 'vector',
+        bbox: null,
+        units: input.units ?? null,
+      }
+      set((state) => {
+        const layers = [...state.layers, mapped]
+        return {
+          layers,
+          layerStyles: mergeStylesFromLayers(state.layerStyles, layers),
+          geojsonTick: state.geojsonTick + 1, // 必需：驱动 deck 重绘上屏
+        }
+      })
+      return { layerId }
+    } catch (error) {
+      // 后端注册失败（如网络/校验）：不上屏，让调用方提示用户
+      console.error('[addDrawnLayer] 失败：', error)
+      return null
+    }
+  },
+  updateDrawnLayerGeojson: async (input) => {
+    // 编辑已建手绘图层：注入自动字段（按该图层 units 重算长度/面积/经纬度），
+    // PUT 持久化 → 校验成功再更新 store 几何/字段/单位并自增 geojsonTick 驱动重绘。
+    const layer = useAppStore.getState().layers.find((item) => item.id === input.id)
+    if (!layer) return null
+    const units = input.units ?? layer.units ?? undefined
+    const features = injectAutoFields(input.features, units)
+    if (features.length === 0) return null
+    const fc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features }
+    try {
+      const updated = await updateLayerGeojson(input.id, {
+        geojson: fc,
+        fields: input.fields,
+        units,
+      })
+      setGeojsonEntry(input.id, fc)
+      set((state) => ({
+        layers: state.layers.map((item) =>
+          item.id === input.id
+            ? {
+                ...item,
+                geometry: updated.geometry,
+                featureCount: features.length,
+                fields: updated.fields ?? item.fields,
+                units: updated.units ?? units ?? null,
+              }
+            : item,
+        ),
+        geojsonTick: state.geojsonTick + 1, // 驱动 deck 重绘新几何
+      }))
+      return { layerId: input.id }
+    } catch (error) {
+      // 后端拒绝（空几何/只读平台图层/网络）：不回写本地，让调用方提示用户
+      console.error('[updateDrawnLayerGeojson] 失败：', error)
+      return null
+    }
+  },
   renameLayer: (id, name) =>
     set((state) => ({
       layers: state.layers.map((layer) => (layer.id === id ? { ...layer, name: name.trim() || layer.name } : layer)),
@@ -1412,6 +1558,8 @@ export const useAppStore = create<AppState>((set) => ({
     }
     set({ focusTarget: { layerId, ts: Date.now() } })
   },
+  requestDraw: () => set((state) => ({ drawRequestTick: state.drawRequestTick + 1 })),
+  requestEditDrawnLayer: (layerId) => set({ editLayerRequest: { layerId, ts: Date.now() } }),
 }))
 
 /* ---------------- 对话持久化 ----------------

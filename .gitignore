@@ -31,3 +31,20 @@ apps/api/restart_logs/
 apps/api/api_8011.err.log
 apps/api/api_8011.out.log
 apps/api/uvi.log
+apps/api/uvicorn_8011.log
+apps/api/uvicorn_8011.err.log
+
+# 本地诊断临时文件（不上传）
+apps/api/_diag.txt
+
+# 运行时数据目录（OpenGIS/浏览器配置等本地产物，不上传）
+apps/api/.workdir/
+
+# eval 运行状态（瞬态，评测后台轮询用，不进 git）
+apps/api/eval_runs/
+
+# agent 级评测 scratch 工作区（瞬态，不进 git）
+apps/api/eval_ws/
+
+# 评测报告（含裁剪版 transcript，工具参数/输出可能敏感，不进 git）
+apps/api/eval_reports/

@@ -37,6 +37,23 @@ def _question_hits_skill(question: str, skill) -> bool:
     return any(kw and kw.lower() in q for kw in getattr(skill, "keywords", ()))
 
 
+# 技能创建任务检测：与 llm_planner 系统提示【技能创建任务】的触发语对齐。
+# 用正则而非关键词子串——skill-creator 的 frontmatter 关键词（创建技能/沉淀技能/
+# 把方法存成技能/制作技能/保存方法）覆盖不了「把刚才这套方法做成一个技能」这类
+# 口径，而系统提示明确要求它们路由到 skill-creator。命中即强制走 skill-creator 兜底，
+# 即使 LLM 把这类请求误判成 clarify（无 history 时「刚才这套」无指代，DeepSeek 合理
+# 追问，但按设计应路由到 skill-creator 由执行器按方法论引导澄清，而不是门1 短路）。
+_SKILL_CREATE_RE = re.compile(
+    r"(创建|沉淀|生成|制作|新建|保存|升级)[^\s，。]{0,12}(技能|skill|Skill)"
+    r"|(把|将).{0,20}(方法|流程|步骤|分析|脚本).{0,8}(做成|存成|沉淀成|升级为|保存为).{0,3}(技能|skill|Skill)"
+    r"|skill[\s-]?creator"
+)
+
+
+def _is_skill_creation_request(question: str) -> bool:
+    return bool(_SKILL_CREATE_RE.search(question))
+
+
 # ── 解释工具原理：确定性兜底（LLM 偶发把问题复述当 chat summary，见 _explain_for_question）──
 
 # 原理/用法类问题关键词：命中才可能触发确定性解释
@@ -159,11 +176,16 @@ def _skill_lines() -> list[str]:
 
 
 def _tool_lines() -> list[str]:
-    """动态工具清单：来自 tools/registry.py（与执行阶段的 TOOL_IMPLEMENTATIONS 对齐）。"""
+    """动态工具清单：来自 tools/registry.py（与执行阶段的 TOOL_IMPLEMENTATIONS 对齐）。
+
+    过滤 user_visible=False 的技能 CRUD/脚本库工具——Planner 只需出「读取方法论」等
+    plan 步骤，真正的创建落盘交给 Executor 按 skill-creator 方法论调 create_skill。
+    隐藏工具仍在 Executor 工具面（_tool_schemas）保留，供落盘调用。
+    """
     return [
         f"- {tool.name} [{tool.category}] {tool.description}"
         for tool in TOOLS
-        if tool.status.value == "ready"
+        if tool.status.value == "ready" and tool.user_visible
     ]
 
 
@@ -309,22 +331,33 @@ def _coerce_required(raw: object, targets: list[str], unmet: list[str]) -> list[
     return items
 
 
-# 数据域提示表：问题里出现这些词，说明用户要的是「人口类」数据。
-# 若解析到的 targets 里没有任何人口图层，把命中词追加进 unmet —— 确定性拦住
-# 「人口画像」被解析成存在但语义错配的图层（如 poi_餐饮）从而绕过缺失闸门。
+# 数据域提示表：问题里出现这些词，说明用户要的是某类「平台没有的数据」。
+# 若解析到的 targets 里没有语义覆盖该域的图层，把命中词追加进 unmet —— 确定性拦住
+# 「可解析但语义错配」的替换（如 用 poi_汽车服务相关替 乱停乱放 / poi_餐饮替 人口画像），
+# 让这些对象照常进 data_check.missing → 门2 由用户选择，而不是静默换数据源。
 _POPULATION_HINTS = ("人口", "人群", "常住", "户籍", "普查")
+
+_DOMAIN_HINTS: dict[str, tuple[str, ...]] = {
+    "人口": _POPULATION_HINTS,
+    "乱停乱放": ("乱停乱放", "停车乱象", "乱停车"),
+    "外卖": ("外卖", "骑手", "外送"),
+    "共享单车": ("共享单车", "共享单车投放点", "单车"),
+}
 
 
 def _domain_check(question: str, targets: list[str], unmet: list[str]) -> list[str]:
     """把「可解析但语义错配」的分析对象也拦进门2（如 用 poi_餐饮替人口画像）。"""
     result = list(unmet)
-    if any(k in question for k in _POPULATION_HINTS):
-        has_population = any("人口" in t for t in targets)
-        if not has_population:
-            for word in _POPULATION_HINTS:
-                if word in question and word not in result:
-                    result.append(word)
-                    break
+    for label, hints in _DOMAIN_HINTS.items():
+        if not any(h in question for h in hints):
+            continue
+        covered = any(label in t or any(h in t for h in hints) for t in targets)
+        if covered:
+            continue
+        for word in hints:
+            if word in question and word not in result:
+                result.append(word)
+                break
     return result
 
 
@@ -383,7 +416,7 @@ def _normalize(question: str, raw: dict, history: list[dict] | None = None) -> P
         is_missing_signal = bool(
             _MISSING_CLARIFY_RE.search(clarify_question) or _MISSING_CLARIFY_RE.search(clarify_needs)
         )
-        if clarify_question and not is_missing_signal:
+        if clarify_question and not is_missing_signal and not _is_skill_creation_request(question):
             choices = [
                 c for c in raw_clarify.get("choices", []) if isinstance(c, str) and c.strip()
             ][:5]
@@ -457,23 +490,28 @@ def _normalize(question: str, raw: dict, history: list[dict] | None = None) -> P
     summary = str(raw.get("summary") or "").strip() or f"围绕问题涉及的数据执行分析。"
     intent_id = _safe_intent_id(raw.get("intent_id"), operation, targets)
 
-    # Skill 一致性：intent_id 命中已注册 Skill 时，operation/targets/距离以 skill.md 的
-    # 默认计划为权威（LLM 语义联想可能漂移，skill 流程必须可复现）。
-    # 被过滤掉的不可解析 Skill 目标同样进 unmet，不静默丢弃。
+    # Skill 一致性：intent_id 命中已注册 Skill 时，operation/距离以 skill.md 的默认计划
+    # 为权威（LLM 语义联想可能漂移，skill 流程必须可复现）。
+    # 方法论 skill 的 targets 通常留空（由 Planner 按当前项目真实图层动态选取，
+    # 防硬编码顶掉真实 POI 图层），故 operation 对齐不依赖 targets 非空；
+    # 只有 skill.plan.targets 非空时才强制替换 targets/距离。
     skill = get_skill(intent_id)
-    if skill is not None and skill.plan and skill.plan.targets:
+    if skill is not None and skill.plan:
         operation = skill.plan.operation
-        resolved_targets: list[str] = []
-        for target in skill.plan.targets:
-            if DATA_REGISTRY.get_layer(target) is not None:
-                if target not in resolved_targets:
-                    resolved_targets.append(target)
-            elif target not in unmet:
-                unmet.append(target)
-        targets = resolved_targets
-        target_distances = dict(skill.plan.target_distances)
-        if not thinking:
-            thinking = f"命中 Skill「{skill.name}」，按 frontmatter 定义的 {operation} 流程对齐计划。"
+        if skill.plan.targets:
+            resolved_targets: list[str] = []
+            for target in skill.plan.targets:
+                if DATA_REGISTRY.get_layer(target) is not None:
+                    if target not in resolved_targets:
+                        resolved_targets.append(target)
+                elif target not in unmet:
+                    unmet.append(target)
+            targets = resolved_targets
+            target_distances = dict(skill.plan.target_distances)
+            if not thinking:
+                thinking = f"命中 Skill「{skill.name}」，按 frontmatter 定义的 {operation} 流程对齐计划。"
+        elif not thinking:
+            thinking = f"命中 Skill「{skill.name}」，按 frontmatter 的 {operation} 流程对齐（targets 留空由 Planner 动态选取）。"
 
     required = _coerce_required(raw.get("required_data"), targets, unmet)
 
@@ -502,6 +540,11 @@ def _normalize(question: str, raw: dict, history: list[dict] | None = None) -> P
             for kw in candidate.keywords:
                 if kw and kw.lower() in q and len(kw) > best_len:
                     best, best_len = candidate, len(kw)
+        # 技能创建请求兜底：问题明显是「做成/创建/沉淀…技能」时，即使关键词没进
+        # frontmatter 列表（如「把刚才这套方法做成一个技能」的「做成…技能」口径），
+        # 也强制落到 skill-creator——系统提示已明确这类请求路由到 skill-creator。
+        if best is None and _is_skill_creation_request(question):
+            best = get_skill("skill-creator")
         prompt_skill = best
     if prompt_skill is not None:
         intent_id = prompt_skill.id

@@ -227,7 +227,8 @@ export function buildDeckLayers(
       const baseStroke = style?.strokeColor ?? layer.color
       // 改动 4：填充/描边不透明度分离。`?? style.opacity ?? 默认` 向后兼容旧样式
       // （fillOpacity/strokeOpacity 为 null 或缺失时仍走整体 opacity）。
-      const defaultOpacity = layer.source === 'generated' ? 0.27 : 0.51
+      // 默认不透明度 0.8（用户要求：不要太透明，约 80%）。生成/普通图层一视同仁。
+      const defaultOpacity = 0.8
       const baseFillOpacity = style?.fillOpacity ?? style?.opacity ?? defaultOpacity
       const baseStrokeOpacity = style?.strokeOpacity ?? style?.opacity ?? baseFillOpacity
       const strokeWidth = style?.strokeWidth ?? 1

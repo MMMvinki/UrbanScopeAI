@@ -200,6 +200,8 @@ def run_buffer(params: dict) -> ToolResult:
     if layer is None:
         return _fail(f"未找到图层：{params.get('layer_id')}")
     distance = int(params.get("distance", 800))
+    if distance <= 0:
+        return _fail(f"缓冲区距离必须为正数：{distance}")
     _, geojson = engine.buffer(layer.id, distance)
     output_layer_id = f"{layer.id}_buffer"
     if geojson is not None:

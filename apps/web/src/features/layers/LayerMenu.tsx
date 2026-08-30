@@ -3,6 +3,7 @@ import {
   Copy,
   Eye,
   FolderTree,
+  Move,
   Palette,
   Pencil,
   Rows3,
@@ -15,6 +16,7 @@ const actions: { action: LayerAction; label: string; icon: typeof ZoomIn; destru
   [
     { action: 'zoom', label: '缩放至图层', icon: ZoomIn },
     { action: 'show-only', label: '仅显示此图层', icon: Eye },
+    { action: 'edit', label: '编辑顶点', icon: Move },
     { action: 'style', label: '图层样式', icon: Palette },
     { action: 'duplicate', label: '复制', icon: Copy },
     { action: 'rename', label: '重命名', icon: Pencil },
@@ -28,10 +30,12 @@ interface LayerMenuProps {
   onAction: (action: LayerAction) => void
   /** 只读平台图层：删除操作隐藏（数据内容不可删，样式/改名仍可用） */
   readonly?: boolean
+  /** 手绘可编辑图层：显示「编辑顶点」，供改几何后保存 */
+  editable?: boolean
 }
 
 /** 图层操作菜单，参考 CARTO Builder，全部中文化 */
-export function LayerMenu({ onClose, onAction, readonly = false }: LayerMenuProps) {
+export function LayerMenu({ onClose, onAction, readonly = false, editable = false }: LayerMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [up, setUp] = useState(false)
 
@@ -67,7 +71,11 @@ export function LayerMenu({ onClose, onAction, readonly = false }: LayerMenuProp
   return (
     <div className={up ? 'layer-menu layer-menu--up' : 'layer-menu'} ref={ref} role="menu">
       {actions
-        .filter(({ action }) => !(readonly && action === 'delete'))
+        .filter(({ action }) => {
+          if (readonly && action === 'delete') return false // 只读平台数据不可删
+          if (action === 'edit' && !editable) return false // 「编辑顶点」仅对手绘图层显示
+          return true
+        })
         .map(({ action, label, icon: Icon, destructive }) => (
         <button
           type="button"

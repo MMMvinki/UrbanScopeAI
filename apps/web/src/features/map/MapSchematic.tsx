@@ -85,8 +85,7 @@ export function MapSchematic({ layers, styles }: MapSchematicProps) {
             />
           )
         }
-        const fillOpacity =
-          style?.opacity ?? (layer.id === 'study_area' ? 0.55 : layer.source === 'generated' ? 0.3 : 0.38)
+        const fillOpacity = style?.opacity ?? 0.8
         // 按几何类型展开子路径：线不闭合、面闭合；嵌套层数不同，逐环 flatten（坏数据跳过不崩）
         const rings: Array<Array<[number, number]>> =
           feature.geometry.type === 'LineString'

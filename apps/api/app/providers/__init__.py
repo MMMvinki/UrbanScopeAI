@@ -6,9 +6,11 @@ from app.providers.registry import get_provider, providers, register
 # 注册内置 provider
 from app.providers.osm.osm_call import OSMProvider
 from app.providers.datasource.datasource_call import DatasourceProvider
+from app.providers.amap.amap_call import AMapProvider
 
 register(OSMProvider())
 register(DatasourceProvider())
+register(AMapProvider())
 
 __all__ = [
     "DataProvider",
@@ -18,4 +20,5 @@ __all__ = [
     "register",
     "OSMProvider",
     "DatasourceProvider",
+    "AMapProvider",
 ]

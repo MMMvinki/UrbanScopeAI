@@ -6,6 +6,7 @@ import sys
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,13 +19,28 @@ from app.agent.memory import MEMORY
 from app.agent.planner import plan_for
 from app.archive import RunArchive, RunIndex
 from app.data_registry import DATA_REGISTRY
-from app.geojson_utils import clean_layer_id
+from app.eval import jobs as eval_jobs
+from app.eval import loader as eval_loader
+from app.eval.report import EVAL_REPORTS_DIR, summarize as eval_summarize
+from app.geojson_utils import (
+    build_fields_from_features,
+    clean_layer_id,
+    geometry_type_for,
+    load_feature_collection,
+)
 from app.mcp import get_gis_mcp_bridge
 from app.memory_store import append_summary, build_run_summary
 from app.skills.store import STORE, SkillError
 from app.models.agent import ExecuteRequest, PlanRequest, PlanResult
 from app.models.events import AgentEventEnvelope, EventType
-from app.models.layer import LayerMetadata, LayerPatch, LayerSchema
+from app.models.layer import (
+    DrawLayerRequest,
+    LayerMetadata,
+    LayerPatch,
+    LayerSchema,
+    LayerSource,
+    UpdateLayerGeojsonRequest,
+)
 from app.models.result import ExecutionResult, ResultGroup
 from app.permissions import PermissionAction, PermissionPolicy, PermissionRuntime
 from app.permissions.broker import BROKER
@@ -62,6 +78,12 @@ class ApproveRequest(BaseModel):
     request_id: str
     allowed: bool
     remember: bool = False
+
+
+class EvalRunRequest(BaseModel):
+    set: str = "all"
+    tier: str = "tool"
+    exclude_dep: bool = False
 
 
 @asynccontextmanager
@@ -210,6 +232,104 @@ async def upload_layer(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/layers/draw")
+def draw_layer(body: DrawLayerRequest) -> dict:
+    """注册用户在地图上手绘的点/线/面为图层。
+
+    前端把 TerraDraw 收集的 FeatureCollection JSON 直接 POST 进来；
+    复用 register_layer 编排（归一 → 构造 LayerMetadata → register_generated →
+    物化到 workspace/data/layers/<id>.json 供跨重启恢复）。
+    手绘图层归入当前项目、可编辑可删除（readonly=False, lazy=False）。
+    """
+    features, geometry_types, bbox = load_feature_collection(body.geojson)
+    if not features:
+        raise HTTPException(status_code=400, detail="绘制的要素为空")
+    fc: dict = {"type": "FeatureCollection", "features": features}
+    if isinstance(body.geojson, dict) and body.geojson.get("crs"):
+        fc["crs"] = body.geojson["crs"]
+
+    layer_id = clean_layer_id(body.layer_id or body.name)
+    layer = LayerMetadata(
+        id=layer_id,
+        name=body.name.strip() or layer_id,
+        source=LayerSource.drawn,
+        geometry=geometry_type_for(geometry_types),
+        color=body.color,
+        visible=True,
+        feature_count=len(features),
+        crs=body.crs,
+        description=f"手绘 {body.name}",
+        generated_by="手绘图层",
+        fields=body.fields or build_fields_from_features(features),
+        readonly=False,
+        lazy=False,
+        units=body.units,
+    )
+    DATA_REGISTRY.register_generated(layer, geojson=fc)
+    # 物化到磁盘：server 重启时间 load_workspace_layer_files 扫描恢复（失败不致命，内存已可见）
+    try:
+        LAYER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (LAYER_DATA_DIR / f"{layer_id}.json").write_text(
+            json.dumps(fc, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        pass
+    return {
+        "layer_id": layer_id,
+        "name": layer.name,
+        "feature_count": len(features),
+        "geometry_types": sorted(geometry_types),
+        "bbox": bbox,
+    }
+
+
+@app.put("/layers/{layer_id}/geojson")
+def update_layer_geojson(layer_id: str, body: UpdateLayerGeojsonRequest) -> LayerMetadata:
+    """编辑已建（非只读）图层的几何：手绘图层在 TerraDraw 改完顶点后保存。
+
+    复用 register_layer 编排（归一 → 构造 LayerMetadata → register_generated（覆盖同名、继承样式）
+    → 物化磁盘）。只读平台图层拒绝（400）；几何为空拒绝（400）。
+    """
+    layer = DATA_REGISTRY.get_layer(layer_id)
+    if layer is None:
+        raise HTTPException(status_code=404, detail=f"未找到图层：{layer_id}")
+    if layer.readonly:
+        raise HTTPException(status_code=400, detail="平台数据只读，不可编辑几何")
+    features, geometry_types, bbox = load_feature_collection(body.geojson)
+    if not features:
+        raise HTTPException(status_code=400, detail="编辑后的要素为空")
+    fc: dict = {"type": "FeatureCollection", "features": features}
+    if isinstance(body.geojson, dict) and body.geojson.get("crs"):
+        fc["crs"] = body.geojson["crs"]
+    new = LayerMetadata(
+        id=layer_id,
+        name=layer.name,
+        source=layer.source,
+        geometry=geometry_type_for(geometry_types),
+        color=layer.color,
+        visible=layer.visible,
+        feature_count=len(features),
+        crs=layer.crs,
+        description=layer.description,
+        generated_by=layer.generated_by,
+        fields=body.fields or build_fields_from_features(features),
+        units=body.units or layer.units,
+        readonly=False,
+        lazy=False,
+        kind=layer.kind,
+    )
+    DATA_REGISTRY.register_generated(new, geojson=fc)
+    # 物化到磁盘（复用 /layers/draw 的写盘路径；失败不致命，内存已可见）
+    try:
+        LAYER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        (LAYER_DATA_DIR / f"{layer_id}.json").write_text(
+            json.dumps(fc, ensure_ascii=False), encoding="utf-8"
+        )
+    except OSError:
+        pass
+    return new
+
+
 @app.post("/uploads/stage")
 async def stage_upload(
     file: UploadFile = File(...),
@@ -239,6 +359,12 @@ def _final_answer_from_result(result: ExecutionResult | None) -> str | None:
         lines.append(f"# {result.result_group.title}")
         evidence = list(dict.fromkeys(result.evidence or []))
         lines.extend(f"- {e}" for e in evidence[:12])
+    fa = (result.final_answer or "").strip()
+    if fa:
+        # 正文：给用户的中文回复（不含思考过程叙述）。此前 final_answer 未写入存档，
+        # 导致「咨询/澄清」类 run 的 final_answer.md 只剩反思、正文全丢失。
+        lines.append("")
+        lines.append(fa)
     if result.reflection:
         lines.append("")
         lines.append("## 反思")
@@ -652,3 +778,126 @@ def api_read_script(script_name: str) -> dict:
     if not result.success:
         raise HTTPException(status_code=404, detail=result.message)
     return result.output
+
+
+# ── eval 评测管理后台 ─────────────────────────────────────────────────
+
+
+@app.get("/eval/sets")
+def api_eval_sets() -> list[dict]:
+    """评估集列表（每个集的 case 数分 tier/分类）。单集解析失败带 error 字段，不整单 500。"""
+    out: list[dict] = []
+    for name in eval_loader.list_sets():
+        try:
+            cases = eval_loader.load_set(name)
+        except Exception as exc:
+            out.append({"name": name, "case_count": 0, "tiers": {}, "categories": {}, "error": f"{type(exc).__name__}: {exc}"})
+            continue
+        tiers: dict[str, int] = {}
+        categories: dict[str, int] = {}
+        for c in cases:
+            tiers[c.tier] = tiers.get(c.tier, 0) + 1
+            categories[c.category] = categories.get(c.category, 0) + 1
+        out.append(
+            {
+                "name": name,
+                "description": eval_loader.get_set_description(name),
+                "case_count": len(cases),
+                "tiers": tiers,
+                "categories": categories,
+            }
+        )
+    return out
+
+
+@app.get("/eval/sets/{set_name}")
+def api_eval_set(set_name: str) -> dict:
+    try:
+        cases = eval_loader.load_set(set_name)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"评估集不存在：{set_name}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "name": set_name,
+        "description": eval_loader.get_set_description(set_name),
+        "cases": [c.model_dump(mode="json") for c in cases],
+    }
+
+
+@app.post("/eval/run")
+def api_eval_run(body: EvalRunRequest) -> dict:
+    """触发一轮评测（子进程跑，不污染实时 DATA_REGISTRY）。并发互斥：已有运行则 409。"""
+    if eval_jobs.is_active():
+        raise HTTPException(status_code=409, detail="已有评测运行中，请等待完成后再试")
+    run_id = eval_jobs.start_eval_job(body.set, body.tier, body.exclude_dep)
+    return {"run_id": run_id}
+
+
+@app.get("/eval/runs/{run_id}")
+def api_eval_run_status(run_id: str) -> dict:
+    job = eval_jobs.get_eval_job(run_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"评测运行不存在：{run_id}")
+    return job
+
+
+@app.get("/eval/reports")
+def api_eval_reports() -> list[dict]:
+    """历史报告列表（按 mtime 倒序；摘要直接读落盘 .json 的 summary）。"""
+    out: list[dict] = []
+    for path in sorted(EVAL_REPORTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        # 旧格式报告（重构前落盘）无 summary → 从 results 现算兜底
+        summary = data.get("summary") or eval_summarize(data.get("results") or [])
+        meta = data.get("meta") or {}
+        out.append(
+            {
+                "id": path.stem,
+                "set": meta.get("set", ""),
+                "tier": meta.get("tier", ""),
+                "pass_rate": summary.get("pass_rate", 0.0),
+                "passed": summary.get("passed", 0),
+                "total": summary.get("total", 0),
+                "failed": summary.get("failed", 0),
+                "by_category": summary.get("by_category", {}),
+                "by_tool": summary.get("by_tool", {}),
+                "fail_reasons": summary.get("fail_reasons", {}),
+                "updated_at": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
+    return out
+
+
+@app.get("/eval/reports/{report_id}")
+def api_eval_report(report_id: str) -> dict:
+    """单份报告结构化详情（meta + summary + 逐条 results）。"""
+    if not re.fullmatch(r"[\w-]+", report_id):
+        raise HTTPException(status_code=404, detail="无效的报告 id")
+    path = EVAL_REPORTS_DIR / f"{report_id}.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"报告不存在：{report_id}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if "summary" not in data:
+        data["summary"] = eval_summarize(data.get("results") or [])
+    data["id"] = report_id
+    data["updated_at"] = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+    return data
+
+
+@app.get("/eval/reports/{report_id}/download")
+def api_eval_report_download(report_id: str) -> FileResponse:
+    """下载报告 .md（文件名白名单，照 /artifacts/plots 模式）。"""
+    if not re.fullmatch(r"[\w-]+", report_id):
+        raise HTTPException(status_code=404, detail="无效的报告 id")
+    md_path = EVAL_REPORTS_DIR / f"{report_id}.md"
+    if not md_path.is_file():
+        raise HTTPException(status_code=404, detail="报告不存在")
+    return FileResponse(
+        md_path,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{report_id}.md"'},
+    )

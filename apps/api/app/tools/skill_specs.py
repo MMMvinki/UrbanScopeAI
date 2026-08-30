@@ -95,6 +95,7 @@ SKILL_TOOL_SPECS: list[ToolSpec] = [
         ),
         display_description="新建一个可复用分析能力（可执行 Skill）。",
         status="ready",
+        user_visible=False,
         parameters={
             "skill_id": "skill id（小写字母开头，kebab-case，2-50 字符）",
             "name": "展示名（中文）",
@@ -124,6 +125,7 @@ SKILL_TOOL_SPECS: list[ToolSpec] = [
         ),
         display_description="修改工作区 Skill 的代码或元信息。",
         status="ready",
+        user_visible=False,
         parameters={
             "skill_id": "skill id（必填）",
             "name": "可选：新展示名",
@@ -154,6 +156,7 @@ SKILL_TOOL_SPECS: list[ToolSpec] = [
         ),
         display_description="校验 Skill 的 scripts/main.py 契约（不执行）。",
         status="ready",
+        user_visible=False,
         parameters={"skill_id": "skill id（必填）", "code": "可选：用这段代码校验（不读磁盘）"},
         json_schema={
             "type": "object",
@@ -173,6 +176,7 @@ SKILL_TOOL_SPECS: list[ToolSpec] = [
         ),
         display_description="把内置 Skill 复制到工作区获得可修改副本。",
         status="ready",
+        user_visible=False,
         parameters={"skill_id": "内置 skill id（必填）"},
         json_schema={
             "type": "object",
@@ -191,6 +195,7 @@ SKILL_TOOL_SPECS: list[ToolSpec] = [
         ),
         display_description="把脚本库里的脚本升级为可复用 Skill。",
         status="ready",
+        user_visible=False,
         parameters={
             "script_name": "脚本库中的文件名（必填，如 20260818-step2-kde.py）",
             "name": "可选：skill 展示名",
@@ -216,6 +221,7 @@ SKILL_TOOL_SPECS: list[ToolSpec] = [
         ),
         display_description="列出 execute_code 执行过的历史脚本。",
         status="ready",
+        user_visible=False,
         parameters={},
         json_schema={"type": "object", "properties": {}},
     ),
@@ -228,6 +234,7 @@ SKILL_TOOL_SPECS: list[ToolSpec] = [
         ),
         display_description="读取脚本库里的某个脚本内容。",
         status="ready",
+        user_visible=False,
         parameters={"script_name": "脚本文件名（必填，如 20260818-step2-kde.py）"},
         json_schema={
             "type": "object",

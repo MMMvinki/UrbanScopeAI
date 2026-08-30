@@ -71,6 +71,16 @@ def _run_datasource_call(params: dict) -> ToolResult:
     return get_provider("datasource").execute(command, p, ctx)
 
 
+def _run_amap_call(params: dict) -> ToolResult:
+    """amap_call：经 DataProvider 分发高德命令（poi_search/district/geocode/regeo）。"""
+    from app.providers import get_provider
+
+    ctx = get_current_context()
+    command = str(params.get("command", ""))
+    p = _parse_json_arg(params.get("params"))
+    return get_provider("amap").execute(command, p, ctx)
+
+
 def _run_execute_code(params: dict) -> ToolResult:
     """execute_code：在受控子进程执行任意 Python（L0 隔离 + L1 权限门 + L4 遥测）。
 
@@ -563,6 +573,7 @@ TOOL_IMPLEMENTATIONS: dict[str, Callable[..., ToolResult]] = {
     "spatial_clip": run_spatial_clip,
     # Phase 0 新增：取数 / 联网 / 导入
     "osm_call": _run_osm_call,
+    "amap_call": _run_amap_call,
     "webfetch": run_webfetch,
     "websearch": run_websearch,
     "datasource_call": _run_datasource_call,

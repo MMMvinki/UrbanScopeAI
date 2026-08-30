@@ -15,9 +15,15 @@ WORKSPACE_ROOT 是代理产物（下载的 OSM/datasource 数据、execute_code 
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-WORKSPACE_ROOT = Path(__file__).resolve().parent / "workspace"
+# 工作区根：默认 apps/api/workspace；评测子进程用 URBANSCOPE_WORKSPACE 覆盖到
+# 独立 scratch 工作区（apps/api/eval_ws），让 agent 级评测的文件物化/execute_code
+# 完全不污染线上工作区（register_layer/file_ops/LAYER_DATA_DIR 全走此常量）。
+WORKSPACE_ROOT = Path(
+    os.environ.get("URBANSCOPE_WORKSPACE", str(Path(__file__).resolve().parent / "workspace"))
+).resolve()
 
 # execute_code 可读的图层数据目录（内置图层 GeoJSON 的物化副本）
 LAYER_DATA_DIR = WORKSPACE_ROOT / "data" / "layers"
