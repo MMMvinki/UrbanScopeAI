@@ -61,6 +61,9 @@ export interface BackendLayer {
   kind?: 'vector' | 'raster'
   tile_url?: string
   bbox?: number[] | null
+  /* DEM 3D 地形（2026-08-30） */
+  dem?: boolean
+  terrain_url?: string
   /* Sprint 2 样式字段（随后端 /layers 下发；Pydantic 序列化为 camelCase） */
   opacity?: number | null
   fillOpacity?: number | null
@@ -199,6 +202,15 @@ export interface ResultGroupBackend {
   title: string
   widgets: ResultWidgetBackend[]
   created_at?: string | null
+  // 统一结果格式（§4.4）：结构化指标/发现/警告/参数/规则/来源/追问/停止原因（缺省为空）
+  metrics?: { name: string; value: number | string; unit?: string | null; params?: Record<string, unknown>; spatial_unit?: string | null; source?: string | null }[]
+  findings?: string[]
+  warnings?: string[]
+  params?: Record<string, unknown>
+  rules?: string[]
+  source?: string | null
+  next_questions?: string[]
+  stop_reason?: string | null
 }
 
 export interface ExecutionResult {
@@ -621,6 +633,8 @@ export function toLayer(layer: BackendLayer): LayerMetadata {
     kind: layer.kind ?? 'vector',
     tileUrl: layer.tile_url,
     bbox: layer.bbox ?? null,
+    dem: layer.dem ?? false,
+    terrainUrl: layer.terrain_url ?? null,
     opacity: layer.opacity ?? null,
     fillOpacity: layer.fillOpacity ?? null,
     strokeOpacity: layer.strokeOpacity ?? null,
@@ -661,6 +675,22 @@ export function toResultGroup(group: ResultGroupBackend | null): ResultGroup | n
     id: group.id,
     title: group.title,
     createdAt: group.created_at ?? undefined,
+    // 统一结果格式映射（snake→camel；缺省即空，向后兼容）
+    metrics: (group.metrics ?? []).map((m) => ({
+      name: m.name,
+      value: m.value,
+      unit: m.unit ?? undefined,
+      params: m.params ?? undefined,
+      spatialUnit: m.spatial_unit ?? undefined,
+      source: m.source ?? undefined,
+    })),
+    findings: group.findings ?? [],
+    warnings: group.warnings ?? [],
+    params: group.params ?? {},
+    rules: group.rules ?? [],
+    source: group.source ?? undefined,
+    nextQuestions: group.next_questions ?? [],
+    stopReason: group.stop_reason ?? undefined,
     widgets: group.widgets.map((widget) => {
       const data = widget.data as {
         series?: { name: string; value: number }[]

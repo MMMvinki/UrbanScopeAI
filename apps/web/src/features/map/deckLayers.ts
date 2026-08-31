@@ -1,6 +1,6 @@
 import { BitmapLayer, GeoJsonLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { BitmapLayerProps, GeoJsonLayerProps, ScatterplotLayerProps, TextLayerProps } from '@deck.gl/layers'
-import { TileLayer } from '@deck.gl/geo-layers'
+import { TileLayer, TerrainLayer, MVTLayer } from '@deck.gl/geo-layers'
 import type { TileLayerProps } from '@deck.gl/geo-layers'
 import type { Layer } from '@deck.gl/core'
 import type { LayerMetadata, LayerStyle, VisualVariables } from '../layers/layerTypes'
@@ -182,6 +182,68 @@ function buildRasterLayer(
   ]
 }
 
+/**
+ * DEM 3D 地形 → TerrainLayer（deck.gl @geo-layers）：用 Terrarium 高程瓦片建 3D 网格，
+ * 再以彩色瓦片做贴图（texture=data=彩色 / elevationData=高程）。
+ * elevationDecoder 按 Terrarium 规则解码：height = R*256 + G + B/256 - 32768。
+ * 与 MapLibre setTerrain 不同，TerrainLayer 是 deck 自有图层，与 interleaved overlay 兼容，
+ * 且不干扰其他图层平铺——只在 3D（pitch）视角呈现地形起伏，俯视时仍是平铺贴图外观。
+ */
+function buildTerrainLayer(layer: LayerMetadata): TerrainLayer[] {
+  if (!layer.tileUrl || !layer.terrainUrl || !layer.bbox) return []
+  const colorUrl = `${API_BASE}${layer.tileUrl}`
+  const elevUrl = `${API_BASE}${layer.terrainUrl}`
+  const bbox = layer.bbox as [number, number, number, number]
+  return [
+    new TerrainLayer({
+      id: `terrain-${layer.id}`,
+      data: colorUrl,
+      texture: colorUrl,
+      elevationData: elevUrl,
+      elevationDecoder: { rScaler: 256, gScaler: 1, bScaler: 1 / 256, offset: -32768 },
+      bounds: [bbox[0], bbox[1], bbox[2], bbox[3]],
+      minZoom: 10,
+      maxZoom: 14,
+      tileSize: 256,
+      wireframe: false,
+    }),
+  ]
+}
+
+/**
+ * 3D 建筑（deck.gl 版）：用 MVTLayer 直读 openfreemap planet 矢量瓦片，只解码 building source-layer，
+ * render_height 作挤出高度、hide_3d 建筑置零透明。替换原 MapLibre fill-extrusion——maplibre-gl-js v5
+ * 对 fill-extrusion 的远处地平线淡出是硬编码、无样式开关（support 的 paint 属性不含 cutoff/fadeRange），
+ * 俯仰 + 缩到城市全景（z13）时远景建筑会被裁掉。deck.gl 挤出体不做该淡出，远景常驻。
+ * tileSize 沿 TileLayer 默认 512，匹配 openfreemap 矢量瓦片，不会错位缩放。
+ */
+export function buildBuildings3DLayer(): MVTLayer[] {
+  return [
+    new MVTLayer({
+      id: 'buildings-3d',
+      // 传 TileJSON URL（不含 {z}）→ MVTLayer 会自动拉 TileJSON 取 tiles[0]。
+      // 关键：openfreemap 的瓦片是**带版本号**路径（.../20260823_080002_pt/{z}/{x}/{y}.pbf），
+      // 直接预览「.../planet/{z}/{x}/{y}.pbf」会返回 HTTP200 但 0 字节空瓦片（实测），裸模板不加载任何建筑。
+      data: 'https://tiles.openfreemap.org/planet/style.json',
+      loadOptions: { mvt: { layers: ['building'] } },
+      minZoom: 13,
+      maxZoom: 14,
+      extruded: true,
+      wireframe: false,
+      pickable: false,
+      // hide_3d（openfreemap 标记）挤出高度 0 + 透明，视觉上剔除
+      getElevation: (f: unknown) => {
+        const p = (f as { properties?: Record<string, unknown> })?.properties
+        return p?.hide_3d ? 0 : (Number(p?.render_height) || 5)
+      },
+      getFillColor: (f: unknown) => {
+        const p = (f as { properties?: Record<string, unknown> })?.properties
+        return p?.hide_3d ? [0, 0, 0, 0] : [127, 179, 217, 191]
+      },
+    }),
+  ]
+}
+
 /** 坐标对是否为合理经纬度（有限且范围合法；坏几何绝不进 deck，防 invalid latitude 崩溃） */
 function isFiniteLngLat(x: number, y: number): boolean {
   return Number.isFinite(x) && Number.isFinite(y) && x >= -180 && x <= 180 && y >= -90 && y <= 90
@@ -206,7 +268,11 @@ export function buildDeckLayers(
   return layers
     .filter((layer) => layer.visible)
     .flatMap((layer): Layer[] => {
-      if (layer.kind === 'raster') return buildRasterLayer(layer, styles) as Layer[]
+      if (layer.kind === 'raster') {
+        // DEM 高程图层 → 真 3D 地形网格；普通栅格 → 平铺贴图
+        if (layer.dem && layer.terrainUrl) return buildTerrainLayer(layer) as Layer[]
+        return buildRasterLayer(layer, styles) as Layer[]
+      }
       const collection = getLayerGeojson(layer)
       // 坏几何（投影坐标/NaN/越界）直接丢弃：绝不喂给 deck.gl 崩地图
       const features: FeatureLike[] = ((collection?.features as FeatureLike[]) ?? []).filter((f) =>

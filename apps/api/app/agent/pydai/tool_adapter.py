@@ -30,6 +30,11 @@ class _RunAborted(Exception):
     """run 已取消（客户端断连 / 服务停止）：工具侧抛出，交由 _pa_run 捕获。"""
 
 
+# 硬护栏：单轮工具调用上限。确定性兜底 —— 模型若陷入循环/层层套娃，到此截停，
+# 保留已算出的真实结果（诚实失败，不造假），并把 stop_reason 置为 tool_call_limit。
+MAX_CALLS = 12
+
+
 def _make_wrapper(name: str) -> Callable[..., Any]:
     """按工具名闭包出 PydanticAI 包装函数（异步、takes_ctx=True、**kwargs）。
 
@@ -45,6 +50,16 @@ def _make_wrapper(name: str) -> Callable[..., Any]:
             if token is not None:
                 token.cancel()
             raise _RunAborted("run 已取消（客户端断连）")
+        # ①′ 工具调用上限护栏：超 MAX_CALLS 即截停（保留已有真实结果），杜绝死循环
+        calls_so_far = len(deps.meta.get("_pa_calls", []))
+        if calls_so_far >= MAX_CALLS:
+            deps.meta["_pa_stop_reason"] = "tool_call_limit"
+            trace = deps.meta.setdefault("_pa_trace", [])
+            trace.append(TraceEvent(type="text", content=f"已达工具调用上限（{MAX_CALLS}次），本轮分析到此为止。"))
+            token = deps.meta.get("_pa_token")
+            if token is not None:
+                token.cancel()
+            raise _RunAborted(f"已达工具调用上限（{MAX_CALLS}次）")
         emit = deps.event_emitter
         # ② TOOL_START
         if emit is not None:

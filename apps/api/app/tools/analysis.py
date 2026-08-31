@@ -1,14 +1,14 @@
 """确定性分析工具集：空间叠加 / 最近距离 / 密度 / 供需 / buffer / 统计 / 数据清单。
 
-真计算优先（app.gis.engine，GeoPandas/Shapely 对真实几何运算），几何数据缺失
-回退 stable_rate 演示数值（防御，不挂）。buffer 的真实几何会写入 DATA_REGISTRY，
-供前端拉取渲染。所有处理函数接受 dict 入参（LLM 工具调用传入），统一返回 ToolResult。
+真计算优先（app.gis.engine，GeoPandas/Shapely 对真实几何运算）。几何数据缺失时
+**诚实失败**（返回 success=False + reason 或逐项 None + warnings），绝不回退演示数值
+冒充成功。buffer 的真实几何会写入 DATA_REGISTRY，供前端拉取渲染。所有处理函数接受
+dict 入参（LLM 工具调用传入），统一返回 ToolResult。
 """
 
 from app.data_registry import DATA_REGISTRY
 from app.gis import engine
 from app.models.tool import ToolResult
-from app.tools.coverage import stable_rate
 
 
 def _layer(layer_id: str) -> object | None:
@@ -105,17 +105,7 @@ def run_spatial_join(params: dict) -> ToolResult:
             },
             message=f"{target.name} 与 {overlay.name} 叠加占比 {real['ratio']}%",
         )
-    ratio = stable_rate(target.id)
-    return ToolResult(
-        success=True,
-        output={
-            "target_layer_id": target.id,
-            "overlay_layer_id": overlay.id,
-            "ratio": ratio,
-            "output_layer_id": f"{target.id}_result",
-        },
-        message=f"{target.name} 与 {overlay.name} 叠加占比 {ratio}%（演示数值）",
-    )
+    return _fail(f"无法计算 {target.name} 与 {overlay.name} 的空间叠加占比：目标或叠加图层缺少有效几何")
 
 
 def run_nearest_distance(params: dict) -> ToolResult:
@@ -135,17 +125,7 @@ def run_nearest_distance(params: dict) -> ToolResult:
             },
             message=f"{target.name} 到最近{reference.name}平均距离 {real['avg_distance_m']} 米",
         )
-    avg_distance = stable_rate(target.id) * 10
-    return ToolResult(
-        success=True,
-        output={
-            "target_layer_id": target.id,
-            "reference_layer_id": reference.id,
-            "avg_distance_m": avg_distance,
-            "output_layer_id": f"{target.id}_result",
-        },
-        message=f"{target.name} 到最近{reference.name}平均距离 {avg_distance} 米（演示数值）",
-    )
+    return _fail(f"无法计算 {target.name} 到最近{reference.name} 的平均距离：目标或参考图层缺少有效几何")
 
 
 def run_density(params: dict) -> ToolResult:
@@ -159,12 +139,7 @@ def run_density(params: dict) -> ToolResult:
             output={"layer_id": layer.id, "density_index": real["density_index"]},
             message=f"{layer.name} 密度指数 {real['density_index']}",
         )
-    index = stable_rate(layer.id)
-    return ToolResult(
-        success=True,
-        output={"layer_id": layer.id, "density_index": index},
-        message=f"{layer.name} 密度指数 {index}（演示数值）",
-    )
+    return _fail(f"无法计算「{layer.name}」密度指数：图层缺少有效几何或面积分母")
 
 
 def run_supply_demand(params: dict) -> ToolResult:
@@ -183,16 +158,7 @@ def run_supply_demand(params: dict) -> ToolResult:
             },
             message=f"{facility.name} 对{population.name}供需满足度 {real['satisfaction_percent']}%",
         )
-    satisfaction = stable_rate(facility.id)
-    return ToolResult(
-        success=True,
-        output={
-            "facility_layer_id": facility.id,
-            "population_layer_id": population.id,
-            "satisfaction_percent": satisfaction,
-        },
-        message=f"{facility.name} 对{population.name}供需满足度 {satisfaction}%（演示数值）",
-    )
+    return _fail(f"无法计算 {facility.name} 对 {population.name} 的供需满足度：人口图层需含 pop 字段，且双方需有有效几何")
 
 
 def run_buffer(params: dict) -> ToolResult:
@@ -203,9 +169,10 @@ def run_buffer(params: dict) -> ToolResult:
     if distance <= 0:
         return _fail(f"缓冲区距离必须为正数：{distance}")
     _, geojson = engine.buffer(layer.id, distance)
+    if geojson is None:
+        return _fail(f"无法生成「{layer.name}」的 {distance}m 缓冲区：图层缺少有效几何")
     output_layer_id = f"{layer.id}_buffer"
-    if geojson is not None:
-        DATA_REGISTRY.set_geojson(output_layer_id, geojson)
+    DATA_REGISTRY.set_geojson(output_layer_id, geojson)
     return ToolResult(
         success=True,
         output={
@@ -279,29 +246,65 @@ def run_spatial_clip(params: dict) -> ToolResult:
 
 
 def run_statistics(params: dict) -> ToolResult:
+    """逐图层统计指定指标。缺失或算不出的图层该项记 None + warnings，绝不伪造数字。
+
+    avg_distance 需显式 reference_layer_id（参考图层）；satisfaction 需显式
+    population_layer_id（人口图层，须含 pop 列）。不再硬编码 transit_stations /
+    population_grid（那两个图层已不存在，过去让这两个统计项永远走演示兜底）。
+    """
     layer_ids = list(params.get("layer_ids", []))
     agg = str(params.get("agg", "coverage_rate"))
     layers, error = _resolve(layer_ids)
     if error is not None:
         return error
+    warnings: list[str] = []
     summary: dict[str, object] = {}
-    for layer in layers:
-        value: object = stable_rate(layer.id)
-        if agg == "coverage_rate":
-            real = engine.coverage(layer.id, 800)
-            if real is not None:
-                value = real["coverage_rate"]
-        elif agg == "avg_distance":
-            real = engine.nearest_distance(layer.id, "transit_stations")
-            value = real["avg_distance_m"] if real is not None else stable_rate(layer.id) * 10
-        elif agg == "density":
-            real = engine.density(layer.id)
-            value = real["density_index"] if real is not None else stable_rate(layer.id)
-        elif agg == "satisfaction":
-            real = engine.supply_demand(layer.id, "population_grid")
-            value = real["satisfaction_percent"] if real is not None else stable_rate(layer.id)
-        summary[layer.name] = value
-    return ToolResult(
-        output={"agg": agg, "summary": summary, "count": len(layers)},
-        message=f"统计 {len(layers)} 个图层（{agg}）",
-    )
+
+    if agg == "avg_distance":
+        reference_id = str(params.get("reference_layer_id", "")).strip()
+        if not reference_id:
+            return _fail("统计平均距离需提供 reference_layer_id（参考图层），且该图层必须存在")
+        reference = _layer(reference_id)
+        if reference is None:
+            return _fail("统计平均距离需提供 reference_layer_id（参考图层），且该图层必须存在")
+        for layer in layers:
+            real = engine.nearest_distance(layer.id, reference.id)
+            if real is None:
+                summary[layer.name] = None
+                warnings.append(f"{layer.name} 平均距离计算失败（无可用几何）")
+            else:
+                summary[layer.name] = real["avg_distance_m"]
+    elif agg == "satisfaction":
+        population_id = str(params.get("population_layer_id", "")).strip()
+        if not population_id:
+            return _fail("统计供需满足度需提供 population_layer_id（人口图层），且该图层必须存在")
+        population = _layer(population_id)
+        if population is None:
+            return _fail("统计供需满足度需提供 population_layer_id（人口图层），且该图层必须存在")
+        for layer in layers:
+            real = engine.supply_demand(layer.id, population.id)
+            if real is None:
+                summary[layer.name] = None
+                warnings.append(f"{layer.name} 供需满足度计算失败（人口图层需含 pop 列，或双方无有效几何）")
+            else:
+                summary[layer.name] = real["satisfaction_percent"]
+    else:  # coverage_rate / density
+        distance = int(params.get("distance", 800))
+        for layer in layers:
+            real = (
+                engine.coverage(layer.id, distance)
+                if agg == "coverage_rate"
+                else engine.density(layer.id)
+            )
+            if real is None:
+                summary[layer.name] = None
+                warnings.append(f"{layer.name} 统计失败（无可用几何或分母）")
+            else:
+                summary[layer.name] = (
+                    real["coverage_rate"] if agg == "coverage_rate" else real["density_index"]
+                )
+
+    output: dict[str, object] = {"agg": agg, "summary": summary, "count": len(layers)}
+    if warnings:
+        output["warnings"] = warnings
+    return ToolResult(output=output, message=f"统计 {len(layers)} 个图层（{agg}）")

@@ -18,7 +18,7 @@ import {
   stripBasemapLabels,
   styleSpecFor,
 } from './mapLayers'
-import { buildDeckLayers } from './deckLayers'
+import { buildBuildings3DLayer, buildDeckLayers } from './deckLayers'
 import { MapSchematic } from './MapSchematic'
 import { TerraDrawController, geometryTypeFromFeatures } from './DrawController'
 import type { DrawMode } from './DrawController'
@@ -327,39 +327,9 @@ export function MapWorkspace() {
     }
   }, [basemapId, showLabels]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 3D 建筑图层：OpenFreeMap planet 矢量源（building source-layer，含 render_height/colour），
-  // MapLibre fill-extrusion 原生挤出。每次底图 setStyle 会清空 MapLibre 图层，靠 styleTick 递增重建。
-  // 渲染层级：MapLibre 原生层在 deck.gl 数据图层之下（数据图层保持可见），建筑作为底图语境。
-  useEffect(() => {
-    const map = mapRef.current
-    if (!loaded || !map?.painter) return
-    if (!show3D) {
-      if (map.getLayer('buildings-3d')) map.removeLayer('buildings-3d')
-      if (map.getSource('buildings')) map.removeSource('buildings')
-      return
-    }
-    // 样式切换瞬间可能未就绪：等 style.load 递增 styleTick 后由本 effect 重建
-    if (!map.isStyleLoaded()) return
-    if (!map.getSource('buildings')) {
-      map.addSource('buildings', { type: 'vector', url: 'https://tiles.openfreemap.org/planet' })
-    }
-    if (!map.getLayer('buildings-3d')) {
-      map.addLayer({
-        id: 'buildings-3d',
-        source: 'buildings',
-        'source-layer': 'building',
-        type: 'fill-extrusion',
-        minzoom: 14,
-        filter: ['!=', ['get', 'hide_3d'], true],
-        paint: {
-          'fill-extrusion-color': '#7fb3d9',
-          'fill-extrusion-height': ['coalesce', ['get', 'render_height'], 5],
-          'fill-extrusion-base': ['coalesce', ['get', 'render_min_height'], 0],
-          'fill-extrusion-opacity': 0.75,
-        },
-      })
-    }
-  }, [loaded, styleTick, show3D])
+  // 3D 建筑图层：已迁移到 deck.gl（见 deckLayers.buildBuildings3DLayer），在下方 deck effect 按 show3D 注入。
+  // 原 MapLibre fill-extrusion 移除——maplibre-gl-js v5 对其建筑的地平线淡出是硬编码、无样式开关，
+  // 缩到城市全景(z13)+俯仰时远景建筑会被裁掉；deck.gl 挤出体不做该淡出。
 
   // 3D 轨道旋转：按住鼠标中键拖拽，绕视图中心旋转视角。
   // 横向拖 = 旋转朝向（bearing），纵向拖 = 俯仰角（pitch），类似 SketchUp / GIS 轨道视图。
@@ -386,7 +356,8 @@ export function MapWorkspace() {
       if (!start) return
       const dx = e.clientX - start.x
       const dy = e.clientY - start.y
-      map.setBearing(startBearing - dx * 0.3)
+      // 向右拖 = bearing 增大 = 地图顺时针转（跟随手部拖拽），与直觉一致；原 `-dx` 反向，已改为 `+dx`。
+      map.setBearing(startBearing + dx * 0.3)
       map.setPitch(Math.min(Math.max(startPitch + dy * 0.2, 0), 85))
     }
     const onMouseUp = () => {
@@ -411,12 +382,15 @@ export function MapWorkspace() {
   useEffect(() => {
     const overlay = deckOverlayRef.current
     if (!deckActive || !overlay) return
-    overlay.setProps({ layers: buildDeckLayers(layers, layerStyles) })
+    const deckLayers = buildDeckLayers(layers, layerStyles)
+    // 3D 建筑开关：show3D 时追加 deck.gl 建筑挤出层（远景不淡出）；关闭时不追加 → 该层随 setProps 移除
+    if (show3D) deckLayers.push(...buildBuildings3DLayer())
+    overlay.setProps({ layers: deckLayers })
     // interleaved 模式下 setProps 只更新了 deck 图层 props（getFillColor 等已变），
     // 但不会主动触发地图画布重绘 —— 导致「改样式地图不变，隐藏再显示（触发相机飞/重建）才更新」。
     // 显式请求一次地图重绘，让样式改动即时上屏。
     mapRef.current?.triggerRepaint()
-  }, [layers, layerStyles, deckActive, geojsonTick])
+  }, [layers, layerStyles, deckActive, geojsonTick, show3D])
 
   // 图层同步（MapLibre 内置路径）：deck.gl 接管时不重复渲染。
   // 兜底路径也消费 layerStyles：改颜色/不透明度即时写 paint，避免回退模式下「改样式地图不变」。

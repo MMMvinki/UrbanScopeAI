@@ -4,10 +4,12 @@ import { useAppStore } from '../../store/useAppStore'
 import { fetchAllGeojson, fetchLayers, toLayer, uploadLayer } from '../../lib/api'
 import { setGeojsonCache } from '../map/mapLayers'
 
-const ACCEPTED = '.csv,.xlsx,.geojson,.json'
+const ACCEPTED = '.csv,.xlsx,.geojson,.json,.gpkg,.zip'
 
-/** 上传图层弹窗：CSV/XLSX（自动识别经纬度列）/ GeoJSON 注册为地图图层。
- *  挂载在 App 层，供「添加图层」按钮与引导案例 2 共用；成功后可选触发自动分析。 */
+/** 上传图层弹窗：CSV/XLSX（自动识别经纬度列）/ GeoJSON / GPKG / Shapefile(zip) 注册为地图图层。
+ *  挂载在 App 层，供「添加图层」按钮与引导案例 2 共用；成功后可选触发自动分析。
+ *  说明：Shapefile 是 .shp+.dbf+.shx+.prj 多文件，浏览器只能选单个文件，故必须打包成 .zip
+ *  上传（后端 ingest 会解压 zip 并读 .shp）。裸选单个 .shp 会因缺 .dbf 等而读取失败。 */
 export function UploadModal() {
   const open = useAppStore((s) => s.uploadModalOpen)
   const pendingPrompt = useAppStore((s) => s.pendingPromptAfterUpload)
@@ -69,7 +71,7 @@ export function UploadModal() {
         <header className="modal__header">
           <div>
             <h3 className="modal__title">上传图层</h3>
-            <p className="modal__desc">CSV / XLSX（自动识别经纬度列）或 GeoJSON</p>
+            <p className="modal__desc">CSV / XLSX / GeoJSON / GPKG / Shapefile(.zip)</p>
           </div>
           <button type="button" className="icon-button" onClick={closeUploadModal} aria-label="关闭">
             <X aria-hidden="true" />
@@ -98,7 +100,7 @@ export function UploadModal() {
             <p className="dropzone__hint">
               {file
                 ? `${(file.size / 1024).toFixed(1)} KB`
-                : '支持 CSV、XLSX、GeoJSON，最大 10MB'}
+                : '支持 CSV、XLSX、GeoJSON、GPKG、Shapefile（.zip 打包，需含 .shp/.dbf/.shx/.prj）'}
             </p>
           </label>
 

@@ -38,6 +38,7 @@ PLOTS_DIR = WORKDIR_DIR / "artifacts" / "plots"
 PERMISSIONS_FILE = WORKDIR_DIR / "permissions.json"
 LAYER_STYLES_FILE = WORKDIR_DIR / "layer_styles.json"  # 样式侧车（Sprint 2）：{layer_id: style_patch}
 DEM_TILES_DIR = WORKDIR_DIR / "dem_tiles"  # DEM 高程瓦片金字塔（build_dem_tiles.py 生成）
+DEM_TERRAIN_DIR = WORKDIR_DIR / "dem_terrarium"  # DEM Terrarium 高程编码瓦片（3D 地形网格用）
 SKILLS_DIR = WORKDIR_DIR / "skills"  # 工作区可执行 Skill（kind=executable）仓库根
 
 _SUBDIRS = [

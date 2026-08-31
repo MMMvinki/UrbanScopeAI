@@ -4,7 +4,7 @@
   以及执行器运行时注册的结果图层（DATA_REGISTRY._geojson）；
 - 计算都在 UTM 50N（EPSG:32650，米制）中进行，保证 buffer / 面积 / 距离的量纲正确，
   输出时再转回 EPSG:4490 经纬度 GeoJSON；
-- 任何图层缺失返回 None，由调用方（工具）回退演示数值，绝不抛错挂死。
+- 任何图层缺失/算不出返回 None，由调用方（工具）诚实失败（success=False + reason），绝不抛错挂死。
 
 说明：GeoPandas/Shapely 负责矢量几何运算（buffer、相交、距离），
 DuckDB Spatial 用于后续大规模属性/空间聚合（本阶段引擎以 GeoPandas 为主）。
@@ -20,6 +20,10 @@ from app.data_registry import DATA_REGISTRY
 
 # 研究范围在北京市区（约 116.34E，UTM 50N 覆盖 114°-120°E）
 _PROJ = "EPSG:32650"
+
+# coverage 的默认比对底盘（居住承载区）。抽出为常量供工具层预检（coverage.py 用它
+# 判断「底盘缺失」并给出明确原因，而不是被 None 误判成图层退化）。
+DEFAULT_COVERAGE_BASE = "shenzhen_communities"
 
 
 def load_gdf(layer_id: str) -> gpd.GeoDataFrame | None:
@@ -64,7 +68,7 @@ def buffer(facility_layer_id: str, distance_m: int):
 def coverage(
     facility_layer_id: str,
     distance_m: int,
-    base_layer_id: str = "shenzhen_communities",
+    base_layer_id: str = DEFAULT_COVERAGE_BASE,
 ):
     """设施服务半径覆盖率（真计算）。
 
@@ -81,8 +85,11 @@ def coverage(
     base_union = _dissolve(base)
     covered = buffered.intersection(base_union)
     total_area = base_union.area
+    # 底盘面积为 0 = 无可计算的覆盖底盘，诚实失败而不是伪造 0% 覆盖率
+    if not total_area:
+        return None
     covered_area = covered.area
-    rate = round(covered_area / total_area * 100, 1) if total_area else 0.0
+    rate = round(covered_area / total_area * 100, 1)
     # 输出图层用完整服务范围（union of buffers），便于地图展示
     buffer_out = gpd.GeoDataFrame(geometry=[buffered], crs=_PROJ)
     return {
@@ -131,7 +138,9 @@ def nearest_distance(target_layer_id: str, reference_layer_id: str):
     mins: list[float] = []
     for point in target_pts.geometry:
         mins.append(float(point.distance(ref_pts.geometry).min()))
-    avg = round(sum(mins) / len(mins), 0) if mins else 0.0
+    if not mins:
+        return None  # 无目标要素，诚实失败而不是伪造 0 距离
+    avg = round(sum(mins) / len(mins), 0)
     return {"avg_distance_m": int(avg), "output_layer_id": f"{target_layer_id}_result"}
 
 
@@ -144,7 +153,9 @@ def spatial_join(target_layer_id: str, overlay_layer_id: str):
     t = _dissolve(target)
     o = _dissolve(overlay)
     inter = t.intersection(o)
-    ratio = round(inter.area / t.area * 100, 1) if t.area else 0.0
+    if not t.area:
+        return None  # target 面积为 0，无有效叠加重叠，诚实失败
+    ratio = round(inter.area / t.area * 100, 1)
     return {"ratio": ratio, "output_layer_id": f"{target_layer_id}_result"}
 
 
@@ -156,10 +167,14 @@ def density(layer_id: str):
     if layer_id == "population_grid" and "pop" in gdf.columns:
         total_pop = float(gdf["pop"].sum())
         total_area_km2 = float(gdf.area.sum() / 1e6)
-        index = round(total_pop / total_area_km2, 1) if total_area_km2 else 0.0
+        if not total_area_km2:
+            return None  # 无面积分母，诚实失败而不是伪造 0
+        index = round(total_pop / total_area_km2, 1)
     else:
         total_area_km2 = float(gdf.area.sum() / 1e6)
-        index = round(len(gdf) / total_area_km2, 2) if total_area_km2 else 0.0
+        if not total_area_km2:
+            return None  # 无面积分母，诚实失败而不是伪造 0
+        index = round(len(gdf) / total_area_km2, 2)
     return {"density_index": index}
 
 
@@ -181,8 +196,10 @@ def supply_demand(facility_layer_id: str, population_layer_id: str):
     )
     served = pop_points[pop_points.geometry.within(buffered)]
     total_pop = float(population["pop"].sum())
+    if not total_pop:
+        return None  # 人口总量为 0，无供需分母，诚实失败而不是伪造 0%
     served_pop = float(served["pop"].sum())
-    satisfaction = round(served_pop / total_pop * 100, 1) if total_pop else 0.0
+    satisfaction = round(served_pop / total_pop * 100, 1)
     return {"satisfaction_percent": satisfaction}
 
 

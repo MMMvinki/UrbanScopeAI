@@ -20,7 +20,7 @@ from app.memory_store import get_memory_lines, get_summary_lines
 from app.models.agent import ExecuteRequest, TraceEvent
 from app.models.events import EventType
 from app.models.layer import GeometryType, LayerMetadata, LayerSource
-from app.models.result import ExecutionResult, ResultGroup, ResultWidget, WidgetType
+from app.models.result import ExecutionResult, ResultGroup, ResultMetric, ResultWidget, WidgetType
 from app.models.tool import ToolResult
 from app.skills import skill_lines
 from app.tools import run_tool
@@ -713,9 +713,35 @@ def _build_group(
     series: list[dict] = []
     seen: set[tuple[str, str]] = set()
     series_seen: set[str] = set()
+    # ── 统一结果格式：从 skill 产物收集结构化指标/发现/警告/参数/规则/来源/追问/停止原因 ──
+    # 注：技能的结构化指标由「指标条」（group.metrics）承载，不重复生成逐张指标卡（避免与
+    # 结果卡网格视觉重复）；skill 的数值已有 metric strip 可追溯。
+    group_metrics: list[ResultMetric] = []
+    group_findings: list[str] = []
+    group_warnings: list[str] = []
+    group_params: dict[str, object] = {}
+    group_rules: list[str] = []
+    group_source: str | None = None
+    group_next: list[str] = []
+    group_stop: str | None = None
     for index, (name, args, result) in enumerate(calls):
         if not result.success:
             continue
+        if name == "execute_skill_script":
+            out = result.output or {}
+            for m in out.get("metrics") or []:
+                if isinstance(m, dict):
+                    group_metrics.append(
+                        ResultMetric(**{k: v for k, v in m.items() if k in ResultMetric.model_fields})
+                    )
+            group_findings.extend(str(x) for x in out.get("findings") or [])
+            group_warnings.extend(str(x) for x in out.get("warnings") or [])
+            group_rules.extend(str(x) for x in out.get("rules") or [])
+            if isinstance(out.get("params"), dict):
+                group_params.update(out["params"])
+            group_source = out.get("source") or group_source
+            group_next.extend(str(x) for x in out.get("next_questions") or [])
+            group_stop = out.get("stop_reason") or group_stop
         made = _widget_from_call(index, name, args, result)
         if made is None:
             continue
@@ -731,7 +757,17 @@ def _build_group(
     # 图表产物：emit_chart 交互图表（一卡一图）优先，save_plot PNG（多子图已自动拆）作为静态图
     widgets.extend(_chart_widgets(charts or []))
     widgets.extend(_plot_widgets(plots or []))
-    if not widgets:
+    group_kwargs = {
+        "metrics": group_metrics,
+        "findings": group_findings,
+        "warnings": group_warnings,
+        "params": group_params,
+        "rules": group_rules,
+        "source": group_source,
+        "next_questions": group_next,
+        "stop_reason": group_stop,
+    }
+    if not widgets and not group_metrics:
         # 纯加载/发布类 run（osm_call + register_layer + execute_code 等）：无指标卡，
         # 但生成了图层 → 返回只含"结果图层"卡的成果组，避免整个 LLM 成果被丢弃后回退规则版。
         if not generated:
@@ -749,7 +785,7 @@ def _build_group(
             )
         )
         return ResultGroup(
-            id=f"rg-{request.intent_id}", title=_group_title(request.operation), widgets=widgets
+            id=f"rg-{request.intent_id}", title=_group_title(request.operation), widgets=widgets, **group_kwargs
         )
     if series:
         widgets.append(
@@ -775,7 +811,7 @@ def _build_group(
                 evidence=[f"{item[1]}（+{item[2]} 要素）" for item in generated],
             )
         )
-    return ResultGroup(id=f"rg-{request.intent_id}", title=_group_title(request.operation), widgets=widgets)
+    return ResultGroup(id=f"rg-{request.intent_id}", title=_group_title(request.operation), widgets=widgets, **group_kwargs)
 
 
 # ── 图层样式 / 地图控制意图：改样式≠出图 ────────────────────────────────
@@ -1328,6 +1364,7 @@ def try_execute(
             result_group=group,
             evidence=evidence,
             final_answer=conclusion or _last_text(trace),
+            stop_reason=group.stop_reason,
         )
     except Exception:
         return None  # 组装异常 → 回退规则版

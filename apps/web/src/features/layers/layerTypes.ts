@@ -31,6 +31,10 @@ export interface LayerMetadata {
   kind?: 'vector' | 'raster'
   /** raster 图层瓦片 URL 模板（{z}/{x}/{y} 占位） */
   tileUrl?: string
+  /** DEM 数字高程图层：可渲 3D 地形网格（deck.gl TerrainLayer） */
+  dem?: boolean
+  /** dem=True 时的高程编码瓦片 URL（Terrarium：height=R*256+G+B/256-32768） */
+  terrainUrl?: string
   /** 真实范围 [minx,miny,maxx,maxy] */
   bbox?: number[] | null
   /** 样式模型（Sprint 2：随后端 /layers 下发，PATCH 持久化） */

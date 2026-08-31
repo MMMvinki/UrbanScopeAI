@@ -143,7 +143,14 @@ class DataRegistry:
         return self._layers.get(layer_id)
 
     def get_layer_by_name(self, name: str) -> LayerMetadata | None:
-        """按名称找图层：先精确匹配，再子串包含匹配（如 "人口" → "人口网格"）。"""
+        """按名称找图层：先精确匹配，再子串包含匹配（如 "人口" → "人口网格"）。
+
+        name 为空字符串时直接返回 None（否则 `"" in layer.name` 恒真，会把空名匹配成
+        登记的第一个图层 —— 这是 avg_distance/satisfaction 缺 reference_layer_id 时
+        「静默选错参考图层」而非诚实失败的根因）。
+        """
+        if not name or not name.strip():
+            return None
         for layer in self._layers.values():
             if layer.name == name:
                 return layer

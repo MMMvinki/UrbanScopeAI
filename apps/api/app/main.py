@@ -63,6 +63,7 @@ from app.tools.shelf import catalog_tools
 from app.upload_service import UploadError, ingest_upload, stage_upload as stage_upload_service
 from app.workspace import (
     DEM_TILES_DIR,
+    DEM_TERRAIN_DIR,
     LAYER_DATA_DIR,
     PLOTS_DIR,
     WORKSPACE_ROOT,
@@ -124,6 +125,17 @@ def dem_tile(z: int, x: int, y: int) -> FileResponse:
     if z < 0 or x < 0 or y < 0 or x >= 2**z or y >= 2**z:
         raise HTTPException(status_code=404, detail="瓦片越界")
     path = DEM_TILES_DIR / str(z) / f"{x}_{y}.png"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="瓦片不存在")
+    return FileResponse(path, media_type="image/png")
+
+
+@app.get("/dem-terrain/{z}/{x}/{y}.png")
+def dem_terrain_tile(z: int, x: int, y: int) -> FileResponse:
+    """DEM Terrarium 高程编码瓦片（3D 地形网格 elevationData，build_dem_tiles.py 生成）。"""
+    if z < 0 or x < 0 or y < 0 or x >= 2**z or y >= 2**z:
+        raise HTTPException(status_code=404, detail="瓦片越界")
+    path = DEM_TERRAIN_DIR / str(z) / f"{x}_{y}.png"
     if not path.exists():
         raise HTTPException(status_code=404, detail="瓦片不存在")
     return FileResponse(path, media_type="image/png")

@@ -40,6 +40,9 @@ class LayerMetadata(BaseModel):
     kind: str = "vector"  # vector | raster（栅格图层：tile_url 瓦片金字塔渲染）
     bbox: list[float] | None = None  # [minx,miny,maxx,maxy]，真实范围（供定位/范围判断）
     tile_url: str | None = None  # raster 图层瓦片 URL 模板（{z}/{x}/{y} 占位）
+    # ── DEM 3D 地形（2026-08-30）────────────────────────────────────
+    dem: bool = False  # True=数字高程图层：可渲 3D 地形网格（deck.gl TerrainLayer）
+    terrain_url: str | None = None  # dem=True 时的高程编码瓦片 URL（Terrarium：height=R*256+G+B/256-32768）
     # ── 样式模型（Sprint 2）：单值样式 + 分档设色描述 ─────────────────
     # 全部可选带默认，向后兼容：既有构造点（demo_data / register_generated / workspace 恢复）
     # 不传这些字段也能正常构造；缺省时前端按 color/visible 渲染。

@@ -31,6 +31,16 @@ export interface ResultWidget {
   layerId?: string
 }
 
+/** 结构化指标：名称 + 数值 + 单位 + 空间单元 + 数据来源（指标条 / 导出 / 追溯） */
+export interface ResultMetric {
+  name: string
+  value: number | string
+  unit?: string
+  params?: Record<string, unknown>
+  spatialUnit?: string
+  source?: string
+}
+
 /** 一次分析产出的成果组 */
 export interface ResultGroup {
   id: string
@@ -39,4 +49,13 @@ export interface ResultGroup {
   createdAt?: string
   /** 归属 run id：成果页「运行记录」打开 RunArchiveModal 用 */
   runId?: string
+  /** 统一结果格式：结构化指标 / 发现 / 质量警告 / 方法参数 / 判定规则 / 数据来源 / 推荐追问 / 停止原因 */
+  metrics?: ResultMetric[]
+  findings?: string[]
+  warnings?: string[]
+  params?: Record<string, unknown>
+  rules?: string[]
+  source?: string
+  nextQuestions?: string[]
+  stopReason?: string
 }

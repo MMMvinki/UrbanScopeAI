@@ -202,6 +202,10 @@ def _assemble(
         evidence: list[str] = []
         for widget in group.widgets:
             evidence.extend(widget.evidence)
+        # 工具层硬护栏的 stop_reason（如 tool_call_limit）优先于技能内声明的，代表整轮终止原因
+        meta_stop = deps.meta.get("_pa_stop_reason")
+        if meta_stop:
+            group.stop_reason = meta_stop
         llm_executor._register_generated(generated)
         MEMORY.record(request.intent_id, group, evidence)
         return ExecutionResult(
@@ -210,6 +214,7 @@ def _assemble(
             result_group=group,
             evidence=evidence,
             final_answer=conclusion or llm_executor._last_text(trace),
+            stop_reason=group.stop_reason,
         )
     except Exception:
         logger.exception("pydai assemble failed run=%s", deps.run_id)
