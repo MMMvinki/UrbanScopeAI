@@ -64,8 +64,8 @@ export interface AgentMessage {
   usedFallback?: boolean
   /** 最终回复：给用户的结论文本（不含思考过程叙述；无则前端回退 bodyText） */
   finalAnswer?: string
-  /** 流式模式：live=真实 SSE 增量渲染；demo=初始演示消息的伪播放 */
-  streamMode?: 'demo' | 'live'
+  /** 流式模式：live=真实 SSE 增量渲染；demo=初始演示消息的伪播放；done=已停止/出错，占位收敛 */
+  streamMode?: 'demo' | 'live' | 'done'
   /** 归属 run id（/runs/{id} 追溯） */
   runId?: string
   /** 本轮处理开始时间（epoch ms）：placeholder 创建时打点，驱动「已思考 Xs」实时计时 */

@@ -37,6 +37,11 @@ from app.tools.query_features import run_query_features
 from app.tools.registry import TOOLS
 from app.tools.register_layer import run_register_layer
 from app.tools.register_uploaded_file import run_register_uploaded_file
+from app.tools.folder_ops import (
+    run_folder_disable_dataset,
+    run_folder_enable_dataset,
+    run_folder_list,
+)
 from app.tools.web import run_webfetch, run_websearch
 
 
@@ -325,6 +330,10 @@ def _run_map_control(tool: str, params: dict) -> ToolResult:
                 message=f"「{layer.name}」是平台数据（只读底座），不可移除，可以隐藏它。",
             )
         DATA_REGISTRY.remove_layer(layer_id)
+        # 同步数据目录状态（三条删除路径之一：Agent remove_layer）
+        from app.data_folder import mark_layer_removed
+
+        mark_layer_removed(layer_id)
         if emit is not None:
             emit(EventType.LAYER_REMOVED, {"layer_id": layer_id})
         return ToolResult(success=True, output={"layer_id": layer_id}, message=f"图层「{layer.name}」已从地图移除。")
@@ -582,6 +591,10 @@ TOOL_IMPLEMENTATIONS: dict[str, Callable[..., ToolResult]] = {
     "register_uploaded_file": run_register_uploaded_file,
     "extract_features": run_extract_features,
     "query_features": run_query_features,
+    # 数据目录操作：Agent 直接列出/启用/停用本地数据目录数据集
+    "folder_list": run_folder_list,
+    "folder_enable_dataset": run_folder_enable_dataset,
+    "folder_disable_dataset": run_folder_disable_dataset,
     # Phase 1：受控代码执行（L0 子进程 + L1 权限门）
     "execute_code": _run_execute_code,
     # Sprint 2：地图控制 / 图层样式

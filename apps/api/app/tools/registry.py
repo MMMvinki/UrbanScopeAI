@@ -286,7 +286,7 @@ TOOLS: list[ToolSpec] = [
             "around=中心点周边（location=[经度,纬度] + radius 米，默认 3000，WGS-84）；"
             "polygon=按范围框下载（bbox=[西,南,东,北]，types 给高德行业分类码如 050000 餐饮服务，"
             "超过单次上限自动分块全量爬取）。keyword 与 types 至少给一个；"
-            "下载结果必然落盘到 .workdir/amap/，output 有 path 字段，立即用 register_layer 发布成地图图层。\n"
+            "下载结果落盘到「数据下载目录」(用户设置时)否则 .workdir/amap/，output 有 path 字段，立即用 register_layer 发布成地图图层。\n"
             "② district 下载行政区边界：keywords='深圳市'/'南山区' + subdistrict=0（本级）或 1（下一级），"
             "返回 WGS-84 多边形 GeoJSON，落盘后 register_layer 发布（高德边界只到区县一级）。\n"
             "③ geocode 地址转坐标：address='深圳市南山区科技园' + city（可选），返回 WGS-84 经纬度，"
@@ -408,7 +408,7 @@ TOOLS: list[ToolSpec] = [
         description=(
             "把工作区内已下载/已生成的 GeoJSON 文件发布为地图图层，地图立即显示。"
             "OSM 下载（osm_call 的 download_bbox/download_features）落盘的文件不会自动上地图，"
-            "需要本工具发布。file_path 通常是 .workdir/osm/download_bbox_xxx.geojson 这类路径。"
+            "需要本工具发布。file_path 通常是数据下载目录(用户设置时)或 .workdir/osm/download_bbox_xxx.geojson 这类路径。"
         ),
         display_description="把工作区内已下载/生成的 GeoJSON 文件发布为地图图层。",
         status="ready",
@@ -420,7 +420,7 @@ TOOLS: list[ToolSpec] = [
         json_schema={
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "要发布的 GeoJSON 文件路径，如 .workdir/osm/download_bbox_xxx.geojson"},
+                "file_path": {"type": "string", "description": "要发布的 GeoJSON 文件路径，如数据下载目录或 .workdir/osm/download_bbox_xxx.geojson"},
                 "layer_id": {"type": "string", "description": "可选：目标图层 id"},
                 "name": {"type": "string", "description": "可选：图层显示名称"},
             },
@@ -1146,6 +1146,72 @@ TOOLS: list[ToolSpec] = [
                 "output_name": {"type": "string", "description": "可选：结果图层显示名"},
             },
             "required": ["target_layer_id", "clip_layer_id"],
+        },
+    ),
+    ToolSpec(
+        name="folder_list",
+        category="data",
+        description=(
+            "列出已链接的本地数据目录（数据源）及其数据集：数据集 id、状态（可直接启用/仅可查询/"
+            "暂不可用）、是否已启用、几何类型（含表格 table）、要素数。用于回答「本地目录里有哪些"
+            "数据、哪些能直接用」这类问题；只读元数据，不加载几何。"
+        ),
+        display_description="列出本地数据目录里的数据集及其可用状态。",
+        status="ready",
+        parameters={
+            "source_id": "可选：只列某个数据源（缺省列全部已链接数据源）",
+        },
+        json_schema={
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "string", "description": "可选：数据源 id（缺省列全部）"},
+            },
+            "required": [],
+        },
+    ),
+    ToolSpec(
+        name="folder_enable_dataset",
+        category="data",
+        description=(
+            "把本地数据目录里的一个数据集启用为项目图层（可直接启用或仅可查询的数据）。"
+            "表格类（无坐标 CSV/XLSX）启用为表格图层（属性表可查、不上地图）；大型数据自动"
+            "抽稀预览。启用后地图/图层面板可见，返回 layer_id。"
+        ),
+        display_description="把本地数据目录里的一个数据集启用为项目图层。",
+        status="ready",
+        parameters={
+            "source_id": "数据源 id（folder_list 里可见）",
+            "dataset_id": "数据集 id（folder_list 里可见）",
+        },
+        json_schema={
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "string", "description": "数据源 id"},
+                "dataset_id": {"type": "string", "description": "数据集 id"},
+            },
+            "required": ["source_id", "dataset_id"],
+        },
+    ),
+    ToolSpec(
+        name="folder_disable_dataset",
+        category="data",
+        description=(
+            "停用本地数据目录里的一个已启用数据集：移除其地图图层（图层从地图/图层面板消失），"
+            "目录里该数据集回到「可启用」状态。幂等：已停用则返回成功。"
+        ),
+        display_description="停用本地数据目录里的一个已启用数据集（移除其图层）。",
+        status="ready",
+        parameters={
+            "source_id": "数据源 id",
+            "dataset_id": "数据集 id",
+        },
+        json_schema={
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "string", "description": "数据源 id"},
+                "dataset_id": {"type": "string", "description": "数据集 id"},
+            },
+            "required": ["source_id", "dataset_id"],
         },
     ),
 ]

@@ -204,7 +204,7 @@ export function buildDeckLayers(
   styles: Record<string, LayerStyle> = {},
 ): Layer[] {
   return layers
-    .filter((layer) => layer.visible)
+    .filter((layer) => layer.visible && layer.geometry !== 'Table')
     .flatMap((layer): Layer[] => {
       if (layer.kind === 'raster') return buildRasterLayer(layer, styles) as Layer[]
       const collection = getLayerGeojson(layer)

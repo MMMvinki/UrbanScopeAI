@@ -42,6 +42,37 @@ export function AppShell({
   const fabPos = useAppStore((s) => s.fabPos)
   const setFabPos = useAppStore((s) => s.setFabPos)
   const [dragging, setDragging] = useState(false)
+  // 左侧功能面板可拖动调宽：260~720px，持久化 urbanscope.panelWidth（默认 340）
+  const [panelWidth, setPanelWidth] = useState(() => {
+    try {
+      const v = parseInt(localStorage.getItem('urbanscope.panelWidth') || '', 10)
+      if (Number.isFinite(v) && v >= 260 && v <= 720) return v
+    } catch {
+      /* ignore */
+    }
+    return 340
+  })
+  const panelResizeRef = useRef<{ startX: number; startW: number } | null>(null)
+  const clampPanelWidth = (v: number) => Math.max(260, Math.min(720, Math.round(v)))
+  const handlePanelResizeDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    panelResizeRef.current = { startX: e.clientX, startW: panelWidth }
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+  const handlePanelResizeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!panelResizeRef.current) return
+    setPanelWidth(clampPanelWidth(panelResizeRef.current.startW + (e.clientX - panelResizeRef.current.startX)))
+  }
+  const handlePanelResizeEnd = () => {
+    panelResizeRef.current = null
+  }
+  // 宽度变化即持久化
+  useEffect(() => {
+    try {
+      localStorage.setItem('urbanscope.panelWidth', String(panelWidth))
+    } catch {
+      /* ignore */
+    }
+  }, [panelWidth])
   // 拖拽会话（pointerId/起点/基位）；dragMovedRef 记录是否发生真实移动，供点击吞掉拖完后的 click
   const dragRef = useRef<{ pointerId: number; startX: number; startY: number; baseX: number; baseY: number } | null>(null)
   const dragMovedRef = useRef(false)
@@ -119,10 +150,23 @@ export function AppShell({
       <LeftNav active={activeNav} onSelect={onSelectNav} />
       <div className="app-shell__main">
         <TopBar />
-        <div className={leftPanelOpen ? 'workspace' : 'workspace is-panel-collapsed'}>
+        <div
+          className={leftPanelOpen ? 'workspace' : 'workspace is-panel-collapsed'}
+          style={leftPanelOpen ? { gridTemplateColumns: `${panelWidth}px minmax(0, 1fr)` } : undefined}
+        >
           {leftPanelOpen && (
             <section className="left-panel" aria-label="功能面板">
               {leftPanel}
+              <div
+                className="panel-resizer"
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="拖动调整面板宽度"
+                onPointerDown={handlePanelResizeDown}
+                onPointerMove={handlePanelResizeMove}
+                onPointerUp={handlePanelResizeEnd}
+                onPointerCancel={handlePanelResizeEnd}
+              />
             </section>
           )}
           <MapErrorBoundary>

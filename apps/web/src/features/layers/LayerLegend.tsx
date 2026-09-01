@@ -84,6 +84,9 @@ export function LayerLegend({ layerId }: { layerId: string }) {
     )
   }
 
+  // 走到这里 categorized 分支已 return，但 TS 无法从「!graduated && !categorized」的提前返回收窄
+  // graduated，显式兜底（避免解构 undefined 报 TS18048）
+  if (!graduated) return null
   const { field, method, classes, palette, breaks } = graduated
   // 级数 = 断点数 + 1；palette 可能比级数短，末档复用最后一个色
   const count = Math.min(breaks.length + 1, classes)

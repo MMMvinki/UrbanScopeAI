@@ -21,6 +21,7 @@ import {
   fetchSkills,
   fetchTools,
   planQuestion,
+  patchLayerStyle,
   switchProject as apiSwitchProject,
   toDataCheck,
   updateLayerGeojson,
@@ -242,6 +243,45 @@ function mergeStylesFromLayers(
   }
   return merged
 }
+
+/**
+ * 增量刷新图层：更新图层清单后只对「新增图层」单取真实几何，不再全量 fetchAllGeojson。
+ *
+ * 启用/上传/删除等改动只影响少数图层；原先每次全量拉取所有图层几何（大图层 JSON
+ * 单条就 20~50MB，几条叠加就是「启用慢」的根因）。改为只拉新增图层（单取端点
+ * /layers/{id}/geojson 对目录数据图层同样返回：启用时几何已 set_geojson 进缓存）。
+ * 已删除的图层（旧有、新无）顺带清缓存，避免地图残留。失败不阻塞（保持会话可用）。
+ */
+export async function refreshLayersIncremental(): Promise<void> {
+  const prev = useAppStore.getState().layers
+  const prevIds = new Set(prev.map((l) => l.id))
+  let fresh: LayerMetadata[]
+  try {
+    fresh = (await fetchLayers()).map(toLayer)
+  } catch {
+    return
+  }
+  const freshIds = new Set(fresh.map((l) => l.id))
+  const added = fresh.filter((l) => !prevIds.has(l.id))
+  const removedIds = prev.filter((l) => !freshIds.has(l.id)).map((l) => l.id)
+  removedIds.forEach((id) => removeGeojsonEntry(id))
+  // 只预取「新增且可见、非 lazy、非 Table、非 raster」的图层几何：
+  // 隐藏的抽稀预览（visible=False, lazy=True）与 Table 图层不得在此被误预取（默认不预览的真语义）。
+  const fetchable = added.filter(
+    (l) => l.visible && !l.lazy && l.geometry !== 'Table' && l.kind !== 'raster',
+  )
+  const results = await Promise.all(fetchable.map((l) => ensureLayerGeojson(l.id)))
+  if (results.some(Boolean)) {
+    // ensureLayerGeojson 成功后已写缓存；这里自增 geojsonTick 驱动 buildDeckLayers 重跑上屏
+    const { geojsonTick } = useAppStore.getState()
+    useAppStore.setState({ geojsonTick: geojsonTick + 1 })
+  }
+  useAppStore.setState((state) => ({
+    layers: fresh,
+    layerStyles: mergeStylesFromLayers(state.layerStyles, fresh),
+  }))
+}
+
 
 /** 向后搜索最后一个指定类型的 block 下标（-1 表示不存在） */
 function lastIndexByType(blocks: AgentBlock[], type: string): number {
@@ -689,15 +729,9 @@ async function runExecute(
     acceptMissing,
   )
 
-  // 执行会生成新图层，重新拉取图层列表与真实几何（失败不阻塞对话）
+  // 执行会生成新图层，增量刷新（只拉新增图层几何）；失败不阻塞对话
   try {
-    const [fresh, geojson] = await Promise.all([fetchLayers(), fetchAllGeojson()])
-    const freshLayers = fresh.map(toLayer)
-    useAppStore.setState((state) => ({
-      layers: freshLayers,
-      layerStyles: mergeStylesFromLayers(state.layerStyles, freshLayers),
-    }))
-    setGeojsonCache(geojson)
+    await refreshLayersIncremental()
     void ensureVisibleGeojson() // 可见的惰性平台图层按需补拉几何
   } catch {
     // 图层刷新失败保持现状
@@ -717,7 +751,12 @@ const initialLayers: LayerMetadata[] = []
 async function ensureVisibleGeojson(): Promise<void> {
   const { layers, geojsonTick } = useAppStore.getState()
   const pending = layers.filter(
-    (layer) => layer.visible && layer.lazy && layer.kind !== 'raster' && !hasLayerGeojson(layer.id),
+    (layer) =>
+      layer.visible &&
+      layer.lazy &&
+      layer.kind !== 'raster' &&
+      layer.geometry !== 'Table' && // Table 不进可见性兜底拉取，只在打开属性表（PreviewModal）时按需取
+      !hasLayerGeojson(layer.id),
   )
   if (pending.length === 0) return
   const results = await Promise.all(pending.map((layer) => ensureLayerGeojson(layer.id)))
@@ -758,11 +797,16 @@ interface AppState {
   geojsonTick: number
   /** 当前底图 id（Agent set_basemap / 工具栏下拉共享） */
   basemapId: string
+  /** 数据源版本号：链接/取消链接/下载目录保存/重扫后自增，「文件路径视图」据此重新拉取 sources */
+  folderSourcesTick: number
+  bumpFolderSourcesTick: () => void
   /** 图层分组（前端本地） */
   groups: LayerGroup[]
   /** 上传弹窗开关 + 上传成功后的待发 prompt（引导案例 2 用） */
   uploadModalOpen: boolean
   pendingPromptAfterUpload: string | null
+  /** 弹窗当前 tab：上传文件 / 链接目录（统一「添加数据」入口） */
+  uploadModalTab: 'upload' | 'link'
   /** 项目（每间独立厨房）：列表 / 当前项目 / 详情 */
   projects: ProjectInfo[]
   currentProject: ProjectInfo | null
@@ -841,7 +885,7 @@ interface AppState {
   createGroup: (name: string, layerId?: string) => void
   moveLayerToGroup: (layerId: string, groupId: string | null) => void
   removeGroup: (groupId: string) => void
-  openUploadModal: (promptAfterUpload?: string) => void
+  openUploadModal: (promptAfterUpload?: string, tab?: 'upload' | 'link') => void
   closeUploadModal: () => void
   addSkill: (skill: Omit<PlanningSkill, 'id'>) => void
   removeSkill: (id: string) => void
@@ -898,9 +942,11 @@ export const useAppStore = create<AppState>((set) => ({
   layerStyles: {},
   geojsonTick: 0,
   basemapId: DEFAULT_BASEMAP_ID,
+  folderSourcesTick: 0,
   groups: [],
   uploadModalOpen: false,
   pendingPromptAfterUpload: null,
+  uploadModalTab: 'upload',
   projects: [],
   currentProject: null,
   projectDetail: null,
@@ -913,6 +959,8 @@ export const useAppStore = create<AppState>((set) => ({
   // 切导航 = 想看对应面板 → 顺带展开左栏（面板被收起时点导航项能重新唤出）
   setActiveNav: (nav) => set({ activeNav: nav, leftPanelOpen: true }),
   setBasemapId: (id) => set({ basemapId: id }),
+  bumpFolderSourcesTick: () =>
+    set((state) => ({ folderSourcesTick: state.folderSourcesTick + 1 })),
   // 只认布尔参数：防止 onClick 把 MouseEvent 当 truthy open 误判成「强制打开」，导致浮窗关不掉
   toggleAgent: (open) =>
     set((state) => ({ agentOpen: typeof open === 'boolean' ? open : !state.agentOpen })),
@@ -1281,22 +1329,44 @@ export const useAppStore = create<AppState>((set) => ({
       }
     }),
   toggleLayerVisibility: (id) => {
+    const layer = useAppStore.getState().layers.find((item) => item.id === id)
+    const nextVisible = !layer?.visible
     set((state) => ({
-      layers: state.layers.map((layer) =>
-        layer.id === id ? { ...layer, visible: !layer.visible } : layer,
+      layers: state.layers.map((item) =>
+        item.id === id ? { ...item, visible: nextVisible } : item,
       ),
     }))
-    void ensureVisibleGeojson() // 平台数据惰性图层：点亮时按需拉几何
-    // 点亮（而非隐藏）时：若图层范围不在当前视野，自动飞过去
-    // （平台数据默认全隐藏、初始视角在北京，不飞过去点亮了也看不见）
-    const layer = useAppStore.getState().layers.find((item) => item.id === id)
-    if (layer?.visible) void useAppStore.getState().focusLayer(id)
+    // folder 图层眼睛开关经 PATCH 持久化（重启/刷新后保持）；请求失败回滚本地状态。
+    // 暂不改变平台/手绘/其他图层的既有持久化行为，控制影响面。
+    if (layer?.source === 'folder') {
+      void patchLayerStyle(id, { visible: nextVisible }).catch(() => {
+        set((state) => ({
+          layers: state.layers.map((item) =>
+            item.id === id ? { ...item, visible: !nextVisible } : item,
+          ),
+        }))
+      })
+    }
+    // 点亮时由 focusLayer 负责「加载一次真实几何 + 定位」（内部对 lazy 非 Table 图层
+    // ensureLayerGeojson），不再额外 ensureVisibleGeojson —— 二者会在缓存写入前并发请求
+    // 同一 /layers/{id}/geojson。隐藏时不加载几何。
+    if (nextVisible) void useAppStore.getState().focusLayer(id)
   },
   setLayerVisible: (id, visible) => {
+    const layer = useAppStore.getState().layers.find((item) => item.id === id)
     set((state) => ({
-      layers: state.layers.map((layer) => (layer.id === id ? { ...layer, visible } : layer)),
+      layers: state.layers.map((item) => (item.id === id ? { ...item, visible } : item)),
     }))
-    void ensureVisibleGeojson()
+    if (layer?.source === 'folder') {
+      void patchLayerStyle(id, { visible }).catch(() => {
+        set((state) => ({
+          layers: state.layers.map((item) =>
+            item.id === id ? { ...item, visible: !visible } : item,
+          ),
+        }))
+      })
+    }
+    // 同 toggleLayerVisibility：点亮由 focusLayer 加载 + 定位，隐藏不加载，避免并发重复请求
     if (visible) void useAppStore.getState().focusLayer(id)
   },
   showOnlyLayer: (id) => {
@@ -1324,11 +1394,16 @@ export const useAppStore = create<AppState>((set) => ({
     // 关键时序：先拉真实几何写入缓存，再并入 store —— 否则 getLayerGeojson 对
     // generated 图层会 demo 兜底，真实数据上屏前闪一下假数据（诚实呈现原则）。
     // 失败保持现状：run 结束后的整段刷新（runExecute）仍会兜底补上。
+    // 先拉 metadata 再依据它决定是否拉几何：隐藏预览（visible=False, lazy）、Table、raster
+    // 不能因为 GENERATED_LAYER 事件被无条件下载 —— 默认不预览必须是真不请求几何。
     try {
-      const [fresh, geoOk] = await Promise.all([fetchLayers(), ensureLayerGeojson(layerId)])
+      const fresh = await fetchLayers()
       const freshLayers = fresh.map(toLayer)
       const target = freshLayers.find((layer) => layer.id === layerId)
       if (!target) return
+      const shouldFetch =
+        target.visible && !target.lazy && target.geometry !== 'Table' && target.kind !== 'raster'
+      const geoOk = shouldFetch ? await ensureLayerGeojson(layerId) : false
       set((state) => {
         const exists = state.layers.some((layer) => layer.id === layerId)
         const layers = exists
@@ -1505,7 +1580,7 @@ export const useAppStore = create<AppState>((set) => ({
     // 表现为「改样式地图不变，隐藏再显示才更新」（toggle 会加载几何）。
     // 这里在任意样式改动（面板滑块 / Agent 设样式 / 分档）时补齐几何并驱动重绘。
     const target = useAppStore.getState().layers.find((item) => item.id === id)
-    if (target?.lazy && target.kind !== 'raster' && !hasLayerGeojson(id)) {
+    if (target?.lazy && target.kind !== 'raster' && target.geometry !== 'Table' && !hasLayerGeojson(id)) {
       void ensureLayerGeojson(id).then((ok) => {
         if (ok) useAppStore.setState((s) => ({ geojsonTick: s.geojsonTick + 1 }))
       })
@@ -1532,9 +1607,14 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   removeGroup: (groupId) =>
     set((state) => ({ groups: state.groups.filter((group) => group.id !== groupId) })),
-  openUploadModal: (promptAfterUpload) =>
-    set({ uploadModalOpen: true, pendingPromptAfterUpload: promptAfterUpload ?? null }),
-  closeUploadModal: () => set({ uploadModalOpen: false, pendingPromptAfterUpload: null }),
+  openUploadModal: (promptAfterUpload, tab) =>
+    set({
+      uploadModalOpen: true,
+      pendingPromptAfterUpload: promptAfterUpload ?? null,
+      uploadModalTab: tab ?? 'upload',
+    }),
+  closeUploadModal: () =>
+    set({ uploadModalOpen: false, pendingPromptAfterUpload: null, uploadModalTab: 'upload' }),
   addSkill: (skill) =>
     set((state) => ({
       skills: [...state.skills, { ...skill, id: `skill-${Date.now()}` }],
@@ -1551,8 +1631,9 @@ export const useAppStore = create<AppState>((set) => ({
     set({ activeNav: 'results', leftPanelOpen: true, highlightGroupId: groupId }),
   focusLayer: async (layerId) => {
     // 平台数据惰性图层：先按需拉几何，再飞过去（fitBounds 需要真实 bbox）
+    // Table 图层无几何：不得在定位/点亮时误取整表（只在打开属性表 PreviewModal 时按需取）
     const layer = useAppStore.getState().layers.find((item) => item.id === layerId)
-    if (layer?.lazy && !hasLayerGeojson(layerId)) {
+    if (layer?.lazy && layer.geometry !== 'Table' && !hasLayerGeojson(layerId)) {
       const ok = await ensureLayerGeojson(layerId)
       if (ok) set((state) => ({ geojsonTick: state.geojsonTick + 1 }))
     }

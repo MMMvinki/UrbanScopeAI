@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "打开测试页面",
+      "type": "shell",
+      "command": "start http://127.0.0.1:5175",
+      "presentation": { "reveal": "never", "panel": "shared" },
+      "problemMatcher": []
+    }
+  ]
+}

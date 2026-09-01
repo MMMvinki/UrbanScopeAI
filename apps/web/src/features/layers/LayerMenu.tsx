@@ -3,6 +3,7 @@ import {
   Copy,
   Eye,
   FolderTree,
+  HardDrive,
   Move,
   Palette,
   Pencil,
@@ -21,6 +22,7 @@ const actions: { action: LayerAction; label: string; icon: typeof ZoomIn; destru
     { action: 'duplicate', label: '复制', icon: Copy },
     { action: 'rename', label: '重命名', icon: Pencil },
     { action: 'group', label: '创建分组', icon: FolderTree },
+    { action: 'data-path', label: '查看数据路径', icon: HardDrive },
     { action: 'preview', label: '属性表', icon: Rows3 },
     { action: 'delete', label: '删除', icon: Trash2, destructive: true },
   ]
@@ -32,10 +34,21 @@ interface LayerMenuProps {
   readonly?: boolean
   /** 手绘可编辑图层：显示「编辑顶点」，供改几何后保存 */
   editable?: boolean
+  /** 表格图层（无几何）：隐藏缩放/仅显示/复制等无意义操作（复制会得到空副本） */
+  table?: boolean
+  /** 源数据磁盘路径：有才显示「查看数据路径」（folder/uploaded 图层定位用） */
+  dataPath?: string | null
 }
 
 /** 图层操作菜单，参考 CARTO Builder，全部中文化 */
-export function LayerMenu({ onClose, onAction, readonly = false, editable = false }: LayerMenuProps) {
+export function LayerMenu({
+  onClose,
+  onAction,
+  readonly = false,
+  editable = false,
+  table = false,
+  dataPath,
+}: LayerMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
   const [up, setUp] = useState(false)
 
@@ -74,6 +87,8 @@ export function LayerMenu({ onClose, onAction, readonly = false, editable = fals
         .filter(({ action }) => {
           if (readonly && action === 'delete') return false // 只读平台数据不可删
           if (action === 'edit' && !editable) return false // 「编辑顶点」仅对手绘图层显示
+          if (action === 'data-path' && !dataPath) return false // 无源路径则隐藏「查看数据路径」
+          if (table && (action === 'zoom' || action === 'show-only' || action === 'duplicate')) return false // 表格无几何：缩放/仅显示/复制无意义
           return true
         })
         .map(({ action, label, icon: Icon, destructive }) => (

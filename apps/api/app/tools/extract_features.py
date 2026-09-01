@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from app.data_registry import DATA_REGISTRY
 from app.geojson_utils import clean_layer_id, geometry_type_for, load_feature_collection
-from app.models.layer import LayerMetadata, LayerSource
+from app.models.layer import GeometryType, LayerMetadata, LayerSource
 from app.models.tool import ToolResult
 from app.workspace import LAYER_DATA_DIR
 
@@ -98,6 +98,8 @@ def run_extract_features(params: ExtractFeaturesParams | dict) -> ToolResult:
     source = DATA_REGISTRY.get_layer(source_id)
     if source is None:
         return ToolResult(success=False, message=f"未找到源图层：{source_id}")
+    if source.geometry == GeometryType.table:
+        return ToolResult(success=False, message=f"「{source.name}」是表格图层，无空间几何，无法提取为空间图层")
 
     conditions = params.filter or {}
     if not conditions:

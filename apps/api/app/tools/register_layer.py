@@ -20,7 +20,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from app.data_registry import DATA_REGISTRY
+from app.data_registry import DATA_REGISTRY, save_layer_meta
 from app.geojson_utils import clean_layer_id, geometry_type_for, load_feature_collection
 from app.models.layer import LayerMetadata, LayerSource
 from app.models.tool import ToolResult
@@ -74,6 +74,8 @@ def run_register_layer(params: RegisterLayerParams | dict) -> ToolResult:
         crs="EPSG:4326",
         description=f"从 {path.name} 发布（{', '.join(sorted(geometry_types)) or '未知'}）",
         generated_by="register_layer 工具",
+        data_path=str(path),  # 记录源数据磁盘路径（下载目录等），供「文件路径」视图归类 + 回文件夹定位
+        data_type=path.suffix.lstrip("."),
     )
     DATA_REGISTRY.register_generated(layer, geojson=fc)
 
@@ -83,6 +85,10 @@ def run_register_layer(params: RegisterLayerParams | dict) -> ToolResult:
         (LAYER_DATA_DIR / f"{layer_id}.json").write_text(
             json.dumps(fc, ensure_ascii=False), encoding="utf-8"
         )
+        # 保存最终注册对象（含自动颜色/继承样式），保证侧车与注册表一致
+        final_layer = DATA_REGISTRY.get_layer(layer_id)
+        if final_layer is not None:
+            save_layer_meta(final_layer)
     except OSError:
         pass  # 物化失败不致命，内存注册已让地图可见
 

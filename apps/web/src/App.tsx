@@ -43,8 +43,9 @@ export default function App() {
     tools: <ToolsPanel />,
     skills: <SkillPanel />,
     results: <ResultsPanel />,
-    // activeNav 的 'agent' 已被 handleNav 路由走（不进入 setActiveNav），此处排除
-  }[activeNav as Exclude<NavKey, 'agent'>]
+    // activeNav 的 'agent' 已被 handleNav 路由走（不进入 setActiveNav），'eval' 在下方整页替换分支提前 return，
+    // 两者都排除（否则对象查找把 'eval' 当 key，TS 报 2339）
+  }[activeNav as Exclude<NavKey, 'agent' | 'eval'>]
 
   if (activeNav === 'eval') {
     // 独立评测管理后台：整页替换 AppShell（与地图工作区分离），自带返回入口

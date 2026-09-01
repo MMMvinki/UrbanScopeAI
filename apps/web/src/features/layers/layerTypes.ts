@@ -1,7 +1,7 @@
-/** 图层来源：平台数据 / 用户上传 / 分析生成 / 手绘 */
-export type LayerSource = 'platform' | 'uploaded' | 'generated' | 'drawn'
+/** 图层来源：平台数据 / 用户上传 / 分析生成 / 手绘 / 本地数据目录 */
+export type LayerSource = 'platform' | 'uploaded' | 'generated' | 'drawn' | 'folder'
 
-export type GeometryType = 'Polygon' | 'Point' | 'LineString'
+export type GeometryType = 'Polygon' | 'Point' | 'LineString' | 'Table'
 
 export interface FieldSpec {
   name: string
@@ -25,6 +25,12 @@ export interface LayerMetadata {
   fields?: FieldSpec[]
   /** 平台数据只读：数据内容不可改，样式/名字可改（🔒 角标，禁止删除） */
   readonly?: boolean
+  /** 源数据磁盘路径（folder 目录/uploaded 数据），便于回文件夹定位 */
+  dataPath?: string | null
+  /** folder 源图层的源内相对路径（如 交通/e.csv），文件路径视图按它细分文件夹 */
+  relPath?: string | null
+  /** 源文件格式（csv/shp/gpkg/geojson…），图层角标用；非文件型为空 */
+  dataType?: string | null
   /** 几何按需加载：重图层不进 bulk 端点，显隐时惰性拉取 /layers/{id}/geojson */
   lazy?: boolean
   /** 图层类型：vector（默认）| raster（栅格瓦片渲染） */
@@ -59,6 +65,7 @@ export type LayerAction =
   | 'group'
   | 'preview'
   | 'edit'
+  | 'data-path'
   | 'delete'
 
 /** 分档设色描述（后端算 breaks，前端按要素取色） */

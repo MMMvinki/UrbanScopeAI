@@ -9,6 +9,10 @@ geopandas==1.1.1
 shapely==2.1.2
 pyproj==3.7.2
 duckdb==1.5.5
+# 栅格元数据/缩略图：rasterio>=1.3.11 提供 numpy 2 兼容 wheel（1.3.9 与 numpy 2.5 二进制不兼容，import 即崩）
+rasterio>=1.3.11
+# 缩略图 PNG 编码（Pillow）
+Pillow>=10.0
 # kernel_density 工具：scipy.stats.gaussian_kde 真核密度估计
 scipy>=1.13
 
@@ -20,6 +24,8 @@ gis-mcp==0.15.0
 requests==2.31.0
 PyYAML>=6.0
 openpyxl>=3.1
+# SOCKS 代理支持：httpx 的 SOCKS transport 依赖 socksio，缺失会在启用代理时 ImportError
+socksio>=1.0
 
 # Phase 1：LiteLLM（多 Provider + 流式）
 # 注意：venv 里 openai 是 3.x（pydantic-ai-slim[openai] 要求 >=3.0.0）。

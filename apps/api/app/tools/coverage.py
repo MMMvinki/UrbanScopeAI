@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.data_registry import DATA_REGISTRY
 from app.gis import engine
+from app.models.layer import GeometryType
 from app.models.tool import ToolResult
 
 # 演示研究范围总面积（km²，仅兜底路径使用）
@@ -33,6 +34,8 @@ def run_coverage(params: CoverageParams | dict) -> ToolResult:
     layer = DATA_REGISTRY.get_layer(params.layer_id)
     if layer is None:
         return ToolResult(success=False, message=f"未找到图层：{params.layer_id}")
+    if layer.geometry == GeometryType.table:
+        return ToolResult(success=False, message=f"「{layer.name}」是表格图层，无空间几何，无法计算覆盖率")
 
     real = engine.coverage(params.layer_id, params.distance)
     if real is not None:

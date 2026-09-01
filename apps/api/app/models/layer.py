@@ -7,6 +7,7 @@ class GeometryType(str, Enum):
     point = "Point"
     line = "LineString"
     polygon = "Polygon"
+    table = "Table"  # 无坐标表格图层（CSV/XLSX 无经纬度列）：可属性表预览/Agent 查询，不上地图渲染
 
 
 class LayerSource(str, Enum):
@@ -14,6 +15,7 @@ class LayerSource(str, Enum):
     uploaded = "uploaded"
     generated = "generated"
     drawn = "drawn"  # 用户在地图上手绘点/线/面创建的图层
+    folder = "folder"  # 本地数据目录中按需启用的数据集（第二步「小数据启用」）
 
 
 class FieldSpec(BaseModel):
@@ -34,6 +36,13 @@ class LayerMetadata(BaseModel):
     description: str | None = None
     generated_by: str | None = None
     fields: list[FieldSpec] = Field(default_factory=list)
+    # ── 源数据路径（2026-09-01）：目录/上传数据回归本地定位用 ─────────────────
+    data_path: str | None = None  # 源数据磁盘绝对路径（folder/uploaded），便于回文件夹定位
+    rel_path: str | None = None  # source-folder 图层的源内相对路径（如 交通/e.csv），「文件路径视图」用它细分文件夹
+    data_type: str | None = None  # 源文件格式（csv/shp/gpkg/geojson…，前端角标用），非文件型图层为空
+    # ── 抽稀采样（2026-09-01）：query_only 预览图层是样本，Agent 查询只能报样本口径 ──
+    sampled: bool = False  # True=本图层是抽稀样本（最多 _PREVIEW_MAX_FEATURES 条），非全量数据
+    original_feature_count: int | None = None  # 抽样前的原始要素/行数（可空，扫描未统计时为空）
     # ── 平台数据（2026-08-17）：只读底座 + 惰性几何 ─────────────────
     readonly: bool = False  # True=平台内置数据：数据内容只读，样式/名字可改
     lazy: bool = False  # True=几何按需加载（重图层不进 bulk 端点，前端 /layers/{id}/geojson 惰性取）

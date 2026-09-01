@@ -16,9 +16,14 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from app.data_registry import DATA_REGISTRY
-from app.geojson_utils import clean_layer_id, geometry_type_for, load_feature_collection
-from app.models.layer import LayerMetadata, LayerSource
+from app.data_registry import DATA_REGISTRY, save_layer_meta
+from app.geojson_utils import (
+    build_fields_from_features,
+    clean_layer_id,
+    geometry_type_for,
+    load_feature_collection,
+)
+from app.models.layer import GeometryType, LayerMetadata, LayerSource
 from app.tools import csv_geojson as csv_tool
 from app.workspace import LAYER_DATA_DIR, WORKSPACE_ROOT
 
@@ -133,12 +138,25 @@ def _geojson_from_gpkg(path: Path) -> dict:
     return _geojson_from_gdf(gdf, path.name)
 
 
-def _ingest_path(path: Path, name: str | None = None) -> dict:
+def _ingest_path(
+    path: Path,
+    name: str | None = None,
+    layer_id: str | None = None,
+    source: LayerSource = LayerSource.uploaded,
+    description: str | None = None,
+    generated_by: str | None = None,
+    data_path: str | None = None,
+    rel_path: str | None = None,
+    data_type: str | None = None,
+) -> dict:
     """从已落盘文件解析 + 注册为地图图层。
 
-    upload（立即注册）与 register_uploaded_file 工具（Agent 按需注册）共用：
-    解析暂存/上传文件 → FeatureCollection → 注册进 DATA_REGISTRY → 物化到
-    workspace/data/layers/。返回 {layer_id, name, feature_count, geometry_types, crs}。
+    upload（立即注册）、register_uploaded_file 工具（Agent 按需注册）与数据目录
+    「小数据启用」共用：解析文件 → FeatureCollection → 注册进 DATA_REGISTRY → 物化
+    到 workspace/data/layers/。返回 {layer_id, name, feature_count, geometry_types, crs}。
+
+    layer_id/source/description/generated_by 为可选覆写，缺省走「文件上传」语义，
+    供数据目录启用时标记来源（source=folder）。均向后兼容。
     """
     suffix = path.suffix.lower()
 
@@ -157,23 +175,75 @@ def _ingest_path(path: Path, name: str | None = None) -> dict:
             "暂不支持 Word/PDF，请转 CSV/GeoJSON）"
         )
 
-    features, geometry_types, _bbox = load_feature_collection(fc)
+    features, _geometry_types, _bbox = load_feature_collection(fc)
     if not features:
         raise UploadError(f"文件没有可用的几何要素：{path.name}")
 
-    layer_id = clean_layer_id(path.stem)
+    layer_id = layer_id or clean_layer_id(path.stem)
     layer_name = (name or path.stem).strip() or layer_id
+    return register_feature_collection(
+        fc,
+        layer_id=layer_id,
+        name=layer_name,
+        source=source,
+        description=description or f"用户上传 {path.name}",
+        generated_by=generated_by or "文件上传",
+        data_path=data_path or str(path),
+        rel_path=rel_path,
+        data_type=data_type or path.suffix.lstrip("."),
+    )
+
+
+def register_feature_collection(
+    fc: dict,
+    *,
+    layer_id: str,
+    name: str,
+    source: LayerSource = LayerSource.uploaded,
+    description: str | None = None,
+    generated_by: str | None = None,
+    visible: bool = True,
+    lazy: bool | None = None,
+    sampled: bool = False,
+    original_feature_count: int | None = None,
+    data_path: str | None = None,
+    rel_path: str | None = None,
+    data_type: str | None = None,
+) -> dict:
+    """把 FeatureCollection 注册为地图图层 + 物化到 workspace/data/layers/。
+
+    供 _ingest_path（上传/工具）与数据目录 gdb 图层启用共用。
+    visible=False 用于「抽稀预览」大图层：默认隐藏，用户勾选眼睛才上地图（默认不预览）。
+    lazy=None 时按既有兼容行为派生（表格 → lazy=True）；显式传 lazy=True 用于「抽稀预览」
+    大图层，使其不进 bulk 渲染链、前端增量刷新/可见性兜底不误预取其几何。
+    sampled/original_feature_count 标记抽稀样本口径：query_features 对 sampled 图层只报样本命中数。
+    data_path 记录源数据磁盘路径（倒灌 folder/uploaded 图层定位用）。
+    rel_path 记录 folder 源图层在数据源内的相对路径（「文件路径视图」细分文件夹用）。
+    返回 {layer_id, name, feature_count, geometry_types, crs}。
+    """
+    features, geometry_types, bbox = load_feature_collection(fc)
+    if not features:
+        raise UploadError("没有可用的几何要素")
+    is_table = not geometry_types  # 无坐标表格（CSV/XLSX 无经纬度列）注册为表格图层
     layer = LayerMetadata(
         id=layer_id,
-        name=layer_name,
-        source=LayerSource.uploaded,
-        geometry=geometry_type_for(geometry_types),
+        name=name,
+        source=source,
+        geometry=GeometryType.table if is_table else geometry_type_for(geometry_types),
         color="#0F172A",
-        visible=True,
+        visible=visible,
         feature_count=len(features),
-        crs="EPSG:4326",
-        description=f"用户上传 {path.name}",
-        generated_by="文件上传",
+        crs="N/A" if is_table else "EPSG:4326",
+        description=description or "图层",
+        generated_by=generated_by or "导入",
+        lazy=is_table if lazy is None else lazy,  # 表格强制 lazy；抽稀预览显式 lazy
+        sampled=sampled,
+        original_feature_count=original_feature_count,
+        bbox=bbox,  # 真实范围随 GeoJSON 落盘（无坐标 Table 为 None）
+        fields=build_fields_from_features(features),
+        data_path=data_path,
+        rel_path=rel_path,
+        data_type=data_type,
     )
     DATA_REGISTRY.register_generated(layer, geojson=fc)
 
@@ -183,15 +253,19 @@ def _ingest_path(path: Path, name: str | None = None) -> dict:
         (LAYER_DATA_DIR / f"{layer_id}.json").write_text(
             json.dumps(fc, ensure_ascii=False), encoding="utf-8"
         )
+        # 保存 DATA_REGISTRY 返回的最终对象（已含继承样式/自动颜色），避免保存未上色的局部旧对象
+        final_layer = DATA_REGISTRY.get_layer(layer_id)
+        if final_layer is not None:
+            save_layer_meta(final_layer)
     except OSError:
         pass  # 物化失败不致命，内存注册已让地图可见
 
     return {
         "layer_id": layer_id,
-        "name": layer_name,
+        "name": name,
         "feature_count": len(features),
         "geometry_types": sorted(geometry_types),
-        "crs": "EPSG:4326",
+        "crs": "N/A" if is_table else "EPSG:4326",
     }
 
 

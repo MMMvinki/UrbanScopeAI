@@ -52,33 +52,51 @@ def run_query_features(params: QueryFeaturesParams | dict) -> ToolResult:
     if not features:
         return ToolResult(success=False, message=f"图层「{layer.name}」没有要素")
 
-    if conditions:
-        matched = [
-            feature for feature in features if _matches(feature.get("properties") or {}, conditions)
-        ]
-    else:
-        matched = features
-
     limit = max(1, min(params.limit, 50))
-    samples = []
-    for feature in matched[:limit]:
-        props = {k: v for k, v in (feature.get("properties") or {}).items() if v is not None}
-        # 属性里的长文本截断，保持卡片可读
-        for key, value in props.items():
-            if isinstance(value, str) and len(value) > 60:
-                props[key] = value[:60] + "…"
-        samples.append(props)
+    total_matched = 0
+    samples: list[dict] = []
+    for feature in features:
+        if conditions and not _matches(feature.get("properties") or {}, conditions):
+            continue
+        total_matched += 1
+        if len(samples) < limit:
+            props = {k: v for k, v in (feature.get("properties") or {}).items() if v is not None}
+            # 属性里的长文本截断，保持卡片可读
+            for key, value in props.items():
+                if isinstance(value, str) and len(value) > 60:
+                    props[key] = value[:60] + "…"
+            samples.append(props)
 
     condition_note = f"（条件：{json.dumps(conditions, ensure_ascii=False)}）" if conditions else ""
+    sampled = bool(getattr(layer, "sampled", False))
+    if sampled:
+        # 抽稀样本图层：图层本身只是样本（最多 _PREVIEW_MAX_FEATURES 条），命中数只能叫
+        # 「样本命中」，绝不能冒充全量总数；sample_size 报告样本规模，供下游判断口径。
+        sample_size = layer.feature_count if layer.feature_count is not None else len(features)
+        return ToolResult(
+            success=True,
+            output={
+                "layer_id": layer_id,
+                "layer_name": layer.name,
+                "sampled": True,
+                "sample_matched": total_matched,
+                "sample_size": sample_size,
+                "sample_count": len(samples),
+                "samples": samples,
+                "filter": conditions,
+            },
+            message=f"图层「{layer.name}」为抽稀样本（样本 {sample_size} 条，非全量数据），"
+                    f"样本中命中 {total_matched} 条{condition_note}，已返回前 {len(samples)} 条样本",
+        )
     return ToolResult(
         success=True,
         output={
             "layer_id": layer_id,
             "layer_name": layer.name,
-            "total_matched": len(matched),
+            "total_matched": total_matched,
             "sample_count": len(samples),
             "samples": samples,
             "filter": conditions,
         },
-        message=f"图层「{layer.name}」共 {len(matched)} 个要素满足条件{condition_note}，已返回前 {len(samples)} 条样本",
+        message=f"图层「{layer.name}」共 {total_matched} 个要素满足条件{condition_note}，已返回前 {len(samples)} 条样本",
     )

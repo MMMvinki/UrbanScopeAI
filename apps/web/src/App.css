@@ -164,6 +164,24 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  position: relative;
+}
+
+/* 面板右边缘拖动调宽手柄 */
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 20;
+  transition: background 0.15s;
+}
+.panel-resizer:hover,
+.panel-resizer:active {
+  background: var(--primary);
+  opacity: 0.35;
 }
 
 /* ============================================================
@@ -373,6 +391,51 @@
   min-height: 30px;
   padding: 0 12px;
   font-size: 13px;
+}
+
+/* 行内图标按钮（启用/停用/批量）：无边框无背景，纯图标，与行内文字同高。
+   像 PS/CAD 图层列表：默认安静，hover 底色浮现，状态用色表达（启用=主色、停用=警示）。 */
+.button--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  min-height: 22px; /* 覆盖 .button 的 min-height:38px，否则图标按钮被撑成 38px 高、目录行随之 38px */
+  padding: 0;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.button--icon:hover {
+  background: var(--border-soft);
+  color: var(--text);
+}
+.button--icon:disabled {
+  background: none;
+  color: var(--text-muted);
+  opacity: 0.45;
+  cursor: default;
+}
+.button--icon svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+/* 启用态（可点击启用 = 主色提示；停用图标默认已随 .button--icon 的次级色） */
+.button--icon--enable {
+  color: var(--navy);
+}
+.button--icon--enable:hover {
+  color: var(--navy-hover);
+}
+.button--icon--disable {
+  color: #b7791f;
+}
+.button--icon--disable:hover {
+  color: #975a16;
 }
 
 .panel-content {
@@ -1613,26 +1676,30 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
-.layer-list {
+.layer-panel__scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden; /* 行已 min-width:0 + 名称省略号，禁止横向溢出裁掉右侧按钮 */
-  padding: 8px 8px 140px;
+}
+
+.layer-list {
   display: grid;
-  gap: 4px;
+  gap: 2px;
   align-content: start;
+  padding: 8px 8px 140px;
 }
 
 .layer-row {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px;
+  gap: 4px 8px;
+  padding: 3px 8px;
   border-radius: var(--radius);
   background: var(--surface);
-  /* 关键：grid 子项默认 min-width:auto，长图层名会把整行撑宽把右侧按钮挤出可视区；
+  /* 关键：子项默认 min-width:auto，长图层名会把整行撑宽把右侧按钮挤出可视区；
      允许行收缩到容器宽度，让名称省略号截断生效 */
   min-width: 0;
 }
@@ -1774,7 +1841,7 @@ button:disabled {
   border: 0;
   background: none;
   font: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text);
   text-align: left;
@@ -1830,6 +1897,20 @@ button:disabled {
   color: var(--text-muted);
   opacity: 0.7;
 }
+/* 源数据磁盘路径（第 6 项）：图层行副行内的路径提示，截断 + hover 看全 */
+.layer-row__path {
+  display: inline-block;
+  margin-left: 4px;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  opacity: 0.75;
+}
 
 /* 就地重命名输入框：替换图层名，点击名字即进入 */
 .layer-row__rename-input {
@@ -1852,6 +1933,45 @@ button:disabled {
   margin: 2px 0 0;
   font-size: 11px;
   color: var(--text-muted);
+}
+/* 展开/收起详情按钮：卡片默认紧凑，详情收进展开块（让一屏看到更多图层） */
+.layer-row__expand {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 2px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.layer-row__expand svg {
+  width: 14px;
+  height: 14px;
+}
+.layer-row__expand:hover {
+  color: var(--text);
+}
+/* 图层详情展开块：占满整行、叠在卡片下方，展示几何/要素数/CRS/来源/数据路径 */
+.layer-row__detail {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 8px 2px 30px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.layer-row__detail-line {
+  word-break: break-all;
+}
+.layer-row__detail-path {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  cursor: pointer;
+}
+.layer-row__detail-path:hover {
+  color: var(--accent);
 }
 
 /* ── 分级设色图例（ArcGIS 式：色块 + 数值区间，可下拉收起）───────── */
@@ -3130,7 +3250,7 @@ button:disabled {
 
 .layer-group__body {
   display: grid;
-  gap: 2px;
+  gap: 1px;
 }
 /* ============================================================
    Agent 行式流（对齐主流 Agent 消息流）— 思考行 / 正文 / 细行 / 计划卡 / 折叠行 / 底部状态
@@ -4121,8 +4241,9 @@ button:disabled {
 .project-file {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 6px;
   border-radius: var(--radius-sm);
 }
 
@@ -4152,6 +4273,8 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
 }
 
@@ -4164,6 +4287,14 @@ button:disabled {
   font-size: 11px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* 数据行操作按钮组：固定靠右、不随左侧信息收缩（保证启用/停用永远可见） */
+.project-file__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 /* 运行历史 */
@@ -5965,4 +6096,246 @@ button:disabled {
 }
 .map-draw-panel__btn-create:hover {
   background: color-mix(in srgb, var(--sage) 90%, #000);
+}
+
+/* ── 本地数据目录接入（第一步「只读发现」）────────────────────────── */
+.folder-sources {
+  border-top: 1px solid var(--border-soft);
+}
+.folder-sources__link {
+  margin-left: auto;
+}
+.folder-source-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+}
+.folder-dataset .project-file {
+  padding-bottom: 2px;
+}
+.project-file__toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+}
+.project-file__toggle svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.folder-dataset-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 8px 3px 24px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.folder-dataset-detail__path {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+.folder-dataset-detail__line {
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+.folder-dataset-detail__warn {
+  color: #b7791f;
+}
+.folder-dataset-detail__reason {
+  color: var(--text-muted);
+}
+
+/* 数据面板密度调整（2026-09-01）：
+   卡片高度保持舒适（图标按钮恢复 22px、正常行高），不把行压薄；
+   密度主要来自「行与行之间的垂直间隔」收紧。 */
+/* 目录树顶层项之间 flush（嵌套项本就 0 间隔） */
+.folder-sources .layer-group__body {
+  gap: 0;
+}
+.folder-sources .folder-tree-dir__header {
+  padding: 2px 6px;
+  line-height: 1.25;
+}
+.folder-dataset .project-file {
+  padding-top: 2px;
+  padding-bottom: 2px;
+  line-height: 1.25;
+}
+
+.folder-path-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.folder-path-row .form-field__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.folder-tree-dir__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-right: 6px;
+}
+/* 操作按钮组：固定靠右、绝不被左侧信息挤出可视区 */
+.folder-tree-dir__actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.folder-tree-dir__header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 2px 6px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+/* 「我的数据」视图切换（第 5 项）：图层 / 文件路径 分段控件 */
+.layer-view-toggle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin: 0 8px 6px;
+}
+.layer-view-toggle button {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--surface-soft, #f3f4f6);
+  border: 1px solid var(--border-soft, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-sm, 6px);
+  color: var(--text-muted, #6b7280);
+  cursor: pointer;
+}
+.layer-view-toggle button.is-active {
+  background: var(--accent, #4f46e5);
+  border-color: var(--accent, #4f46e5);
+  color: #fff;
+  font-weight: 600;
+}
+.folder-tree-dir__header:hover {
+  background: var(--border-soft);
+}
+.folder-tree-dir__header svg {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.folder-tree-dir__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.folder-tree-dir__count {
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.folder-tree-dir__ready {
+  font-size: 11px;
+  color: #2f855a;
+  white-space: nowrap;
+}
+
+.modal__tabs {
+  display: flex;
+  gap: 4px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 12px;
+}
+.modal__tab {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.modal__tab:hover {
+  color: var(--text);
+}
+.modal__tab.is-active {
+  color: var(--text);
+  border-bottom-color: var(--primary);
+  font-weight: 600;
+}
+.modal__tab svg {
+  width: 14px;
+  height: 14px;
+}
+
+.folder-download-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+}
+.folder-download-row svg {
+  width: 13px;
+  height: 13px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.folder-download-row__label {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.folder-download-row__path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.folder-source-tools {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  flex-wrap: wrap;
+}
+
+/* 左侧面板滚动条：加宽 + 可见 thumb，避免数据多时看不到滚动条 */
+.layer-panel__scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.layer-panel__scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+.layer-panel__scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
 }

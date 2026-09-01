@@ -438,6 +438,8 @@ export function MapWorkspace() {
     }
 
     for (const layer of layers) {
+      // 表格图层（无几何）不进 MapLibre 渲染链（属性表/Agent 查询用）
+      if (layer.geometry === 'Table') continue
       const sourceId = sourceIdFor(layer.id)
       const mapLayerId = mapLayerIdFor(layer.id)
       const spec = styleSpecFor(layer, layerStyles[layer.id])

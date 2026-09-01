@@ -65,6 +65,32 @@ def auto_layer_color(layer_id: str, geometry: str) -> str:
     return palette[_fnv1a(f"{layer_id}:{geometry}") % len(palette)]
 
 
+def save_layer_meta(layer: LayerMetadata) -> None:
+    """把图层元数据以 `<layer_id>.meta.json` 侧车落盘（workspace + 项目图层目录）。
+
+    供重启 load_workspace_layer_files 恢复时还原 source / data_path / rel_path / visible /
+    name 等字段——否则重启后 folder 源图层会退化成 uploaded、路径信息与「默认不预览」丢失。
+    与物化 geojson 同目录；失败不致命（内存注册已让地图可见）。
+    """
+    from app.workspace import LAYER_DATA_DIR
+
+    dirs = {LAYER_DATA_DIR}
+    try:
+        from app.projects import project_layer_dir
+
+        dirs.add(project_layer_dir(DATA_REGISTRY.current_project_id))
+    except Exception:  # noqa: BLE001 —— 无项目上下文时至少写 workspace
+        pass
+    for directory in dirs:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / f"{layer.id}.meta.json").write_text(
+                layer.model_dump_json(), encoding="utf-8"
+            )
+        except OSError:
+            pass
+
+
 class DataRegistry:
     def __init__(self) -> None:
         self._layers: dict[str, LayerMetadata] = {}
@@ -219,14 +245,15 @@ class DataRegistry:
         from app.projects import project_layer_dir, project_manifest_path
         from app.workspace import LAYER_DATA_DIR
 
-        # workspace/data/layers + 当前项目图层目录里的 <id>.json
+        # workspace/data/layers + 当前项目图层目录里的 <id>.json 与 <id>.meta.json
         for directory in (LAYER_DATA_DIR, project_layer_dir(self.current_project_id)):
-            path = directory / f"{layer_id}.json"
-            try:
-                if path.exists():
-                    path.unlink()
-            except OSError:
-                pass
+            for suffix in ("json", "meta.json"):
+                path = directory / f"{layer_id}.{suffix}"
+                try:
+                    if path.exists():
+                        path.unlink()
+                except OSError:
+                    pass
         # 项目 manifest：去掉该图层条目，避免切换/重启后从 manifest 复活
         manifest_path = project_manifest_path(self.current_project_id)
         try:
@@ -269,11 +296,17 @@ class DataRegistry:
         （如 register_layer 物化的 OSM 建筑）跨重启后从这里恢复，地图仍可见。
         demo 图层以 demo_data 为准，跳过；解析失败的文件跳过不致命。返回注册数。
         """
-        from app.geojson_utils import geometry_type_for, load_feature_collection
-        from app.models.layer import LayerSource
+        from app.geojson_utils import (
+            build_fields_from_features,
+            geometry_type_for,
+            load_feature_collection,
+        )
+        from app.models.layer import GeometryType, LayerSource
 
         count = 0
         for path in sorted(Path(directory).glob("*.json")):
+            if path.name.endswith(".meta.json"):
+                continue  # 跳过元数据侧车（<id>.meta.json，不是图层几何）
             layer_id = path.stem
             if layer_id in self._layers:
                 continue  # demo 图层以 demo_data 注册表为准，不重复注册
@@ -287,18 +320,48 @@ class DataRegistry:
             fc: dict = {"type": "FeatureCollection", "features": features}
             if isinstance(data, dict) and "crs" in data:
                 fc["crs"] = data["crs"]
-            layer = LayerMetadata(
-                id=layer_id,
-                name=layer_id,
-                source=LayerSource.uploaded,
-                geometry=geometry_type_for(geometry_types),
-                color="#0F172A",
-                visible=True,
-                feature_count=len(features),
-                crs="EPSG:4326",
-                description=f"从 {path.name} 恢复（workspace/data/layers）",
-                generated_by="workspace 图层索引",
-            )
+            is_table = not geometry_types  # 表格图层物化 JSON 全 null geometry，恢复不能落 point
+            # 优先读注册时的元数据侧车（保留 source/data_path/rel_path/visible/name 等），
+            # 缺失或 id 不符时才按 geojson 兜底重建（早期图层无侧车 / 错位侧车不可信）。
+            # 数据派生字段（geometry/feature_count/fields/bbox）一律以实际 GeoJSON 为准：
+            # 几何可能被编辑过、feature_count/fields 可能过期，侧车里这些字段不可全信。
+            layer: LayerMetadata | None = None
+            meta_path = path.parent / f"{layer_id}.meta.json"
+            try:
+                if meta_path.exists():
+                    raw_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    if (raw_meta or {}).get("id") == layer_id:  # 侧车 id 必须与文件 stem 一致
+                        layer = LayerMetadata.model_validate(raw_meta)
+            except Exception:  # noqa: BLE001
+                layer = None
+            if layer is None:
+                layer = LayerMetadata(
+                    id=layer_id,
+                    name=layer_id,
+                    source=LayerSource.uploaded,
+                    geometry=GeometryType.table if is_table else geometry_type_for(geometry_types),
+                    color="#0F172A",
+                    visible=True,
+                    feature_count=len(features),
+                    crs="N/A" if is_table else "EPSG:4326",
+                    description=f"从 {path.name} 恢复（workspace/data/layers）",
+                    generated_by="workspace 图层索引",
+                    lazy=is_table,
+                    bbox=_bbox,  # 真实范围从实际 GeoJSON 计算（无坐标 Table 为 None）
+                    fields=build_fields_from_features(features),
+                )
+            else:
+                # 侧车存在且 id 校验通过：注册语义字段（source/name/visible/data_path/rel_path/
+                # data_type/lazy 等）从侧车恢复，数据派生字段以实际 GeoJSON 为准。
+                # bbox 无论 GeoJSON 是否有顶层 bbox，一律以实际计算值 _bbox 覆盖侧车；
+                # 实际无坐标时覆盖成 None，不能保留旧侧车的过期 bbox。
+                derived: dict = {
+                    "geometry": GeometryType.table if is_table else geometry_type_for(geometry_types),
+                    "feature_count": len(features),
+                    "fields": build_fields_from_features(features),
+                    "bbox": _bbox,
+                }
+                layer = layer.model_copy(update=derived)
             self.register_generated(layer, geojson=fc)
             self._project_layer_ids.add(layer.id)  # workspace 恢复的图层归属当前项目
             count += 1
@@ -392,9 +455,13 @@ class DataRegistry:
         }
 
     def _include_in_bulk(self, layer_id: str) -> bool:
-        """bulk 端点排除 lazy 平台图层：重图层按需单取，避免首屏全量拉取。"""
+        """bulk 端点排除所有 lazy 图层：重平台图层 + 表格图层都不进 bulk，按需单取。
+
+        表格（无几何）不进 bulk 渲染链，避免 120MB 表格整体发给浏览器；
+        前端对 lazy 图层走 /layers/{id}/geojson 单取（ensureLayerGeojson）。
+        """
         layer = self._layers.get(layer_id)
-        return layer is None or not (layer.source == LayerSource.platform and layer.lazy)
+        return layer is None or not layer.lazy
 
     # ── 项目作用域：当前项目图层换入/换出（底座 demo/platform 全局共享） ──
 

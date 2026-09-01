@@ -34,6 +34,7 @@ const GEOMETRY_LABEL: Record<GeometryType, string> = {
   Point: '点',
   LineString: '线',
   Polygon: '面',
+  Table: '表格',
 }
 
 const FIELD_TYPES: Array<{ value: string; label: string }> = [

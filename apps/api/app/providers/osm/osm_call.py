@@ -63,18 +63,9 @@ def _workspace_path(ctx: ToolContext) -> Path:
 
 
 def _resolve_output_path(ctx: ToolContext, raw_path: str | None, command: str) -> Path:
-    workspace = _workspace_path(ctx)
-    if raw_path:
-        raw = Path(str(raw_path)).expanduser()
-        path = raw.resolve() if raw.is_absolute() else (workspace / raw).resolve()
-    else:
-        safe_command = re.sub(r"[^A-Za-z0-9_.-]+", "_", command).strip("_") or "osm"
-        path = (workspace / ".workdir" / "osm" / f"{safe_command}_{uuid.uuid4().hex[:8]}.geojson").resolve()
-    if workspace != path and workspace not in path.parents:
-        raise ValueError(f"output_path 必须位于 workspace 内: {path}")
-    if path.suffix.lower() not in {".geojson", ".json"}:
-        path = path.with_suffix(".geojson")
-    return path
+    from app.data_download import resolve_download_output
+
+    return resolve_download_output(raw_path, command, _workspace_path(ctx), "osm")
 
 
 def _feature_summary(geojson: dict[str, Any]) -> dict[str, Any]:
@@ -144,6 +135,9 @@ def _finalize_geojson_result(
     output_path = _resolve_output_path(ctx, str(raw_output_path) if raw_output_path else None, command)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(encoded, encoding="utf-8")
+    from app.data_download import notify_download_saved
+
+    notify_download_saved()
     summary = _feature_summary(geojson)
     output: dict[str, Any] = {
         "path": str(output_path),
