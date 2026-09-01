@@ -1,7 +1,0 @@
-[
-  {
-    "key": "ctrl+shift+f5",
-    "command": "workbench.action.tasks.runTask",
-    "args": "打开测试页面"
-  }
-]

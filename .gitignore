@@ -48,3 +48,6 @@ apps/api/eval_ws/
 
 # 评测报告（含裁剪版 transcript，工具参数/输出可能敏感，不进 git）
 apps/api/eval_reports/
+
+# 本地 VSCode 工作区配置（不应入仓库）
+.vscode/
