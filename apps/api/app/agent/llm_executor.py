@@ -13,7 +13,7 @@ from typing import Any
 
 from app.agent import llm_client
 from app.agent.memory import MEMORY
-from app.data_registry import DATA_REGISTRY
+from app.data_registry import DATA_REGISTRY, save_layer_meta
 from app.geojson_utils import geometry_type_for, load_feature_collection
 from app.mcp import get_gis_mcp_bridge
 from app.memory_store import get_memory_lines, get_summary_lines
@@ -300,6 +300,10 @@ def _register_generated(generated: list[tuple[str, str, int]]) -> None:
         # 保留工具 handler 注册时带的更丰富元数据（字段 schema、描述），
         # 避免此处重注册把 fields 冲成空、属性表/schema 对生成图层失效。
         old_layer = DATA_REGISTRY.get_layer(layer_id)
+        # 若图层已由 register_layer/目录启用完整注册（uploaded/folder，带 data_path/来源语义），
+        # 不再二次降级登记成 generated —— 否则 folder/uploaded 的来源徽章与路径信息会丢失。
+        if old_layer is not None and old_layer.source in (LayerSource.uploaded, LayerSource.folder):
+            continue
         DATA_REGISTRY.register_generated(
             LayerMetadata(
                 id=layer_id,
@@ -313,8 +317,19 @@ def _register_generated(generated: list[tuple[str, str, int]]) -> None:
                 fields=(old_layer.fields if old_layer and old_layer.fields else []),
                 description=(old_layer.description if old_layer else None),
                 generated_by="LLM Agent 工具调用",
+                # 保留 register_layer 记录的源数据路径与格式，避免下载/抓取图层被重登记成无路径/无格式
+                data_path=(old_layer.data_path if old_layer else None),
+                rel_path=(old_layer.rel_path if old_layer else None),
+                data_type=(old_layer.data_type if old_layer else None),
             )
         )
+        # 保证最终内存 metadata 与侧车一致（register_generated 不会自动写侧车）
+        final_layer = DATA_REGISTRY.get_layer(layer_id)
+        if final_layer is not None:
+            try:
+                save_layer_meta(final_layer)
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _fingerprint(name: str, args: dict) -> str:
@@ -518,20 +533,28 @@ def _widget_from_call(
                     if v is not None and k not in _NOISE_KEYS
                 ]
                 items.append(" · ".join(parts) or "（空属性）")
+        is_sampled = out.get("sampled") is True
+        # 抽稀样本图层：只报样本命中数，绝不把样本命中数说成全量总数
+        matched = out.get("sample_matched") if is_sampled else out.get("total_matched", 0)
+        matched = matched if matched is not None else 0
+        subtitle = "抽稀样本中命中 · 前若干条" if is_sampled else "满足条件 · 前若干条样本"
+        evidence = (
+            [f"「{layer_name}」为抽稀样本（样本 {out.get('sample_size', '?')} 条），样本中命中 {matched} 条（非全量总数）"]
+            if is_sampled
+            else [f"「{layer_name}」共 {matched} 个要素满足查询条件"]
+        )
+        evidence.append(f"已返回前 {out.get('sample_count', 0)} 条样本")
         return (
             ResultWidget(
                 id=wid,
                 title=f"{layer_name}要素查询",
                 widget_type=WidgetType.list,
-                value=f"{out.get('total_matched', 0)} 个要素",
-                subtitle="满足条件 · 前若干条样本",
-                evidence=[
-                    f"「{layer_name}」共 {out.get('total_matched', 0)} 个要素满足查询条件",
-                    f"已返回前 {out.get('sample_count', 0)} 条样本",
-                ],
+                value=f"{matched} 个要素" + ("（抽稀样本）" if is_sampled else ""),
+                subtitle=subtitle,
+                evidence=evidence,
                 data={"items": items},
             ),
-            float(out.get("total_matched", 0)),
+            float(matched),
             False,
         )
     return None

@@ -27,12 +27,17 @@ DEFAULT_COVERAGE_BASE = "shenzhen_communities"
 
 
 def load_gdf(layer_id: str) -> gpd.GeoDataFrame | None:
-    """加载图层几何为 UTM 米制 GeoDataFrame；图层缺失返回 None。"""
+    """加载图层几何为 UTM 米制 GeoDataFrame；图层缺失或无真实几何返回 None。"""
     geojson = DATA_REGISTRY.get_geojson(layer_id)
     if geojson is None:
         return None
+    features = geojson.get("features") or []
+    # 表格图层（无几何）特征全为 null geometry，GeoPandas 会生成无效几何且 set_crs 可能失败，
+    # 直接返回 None，交给调用方拒绝（不落入 stable_rate 演示兜底）。
+    if features and all((f.get("geometry") or None) is None for f in features):
+        return None
     try:
-        gdf = gpd.GeoDataFrame.from_features(geojson["features"])
+        gdf = gpd.GeoDataFrame.from_features(features)
     except Exception:
         return None
     gdf = gdf.set_crs("EPSG:4490").to_crs(_PROJ)

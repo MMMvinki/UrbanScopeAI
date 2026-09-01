@@ -15,19 +15,11 @@ import {
   Trash2,
   UploadCloud,
 } from 'lucide-react'
-import { useAppStore } from '../../store/useAppStore'
+import { refreshLayersIncremental, useAppStore } from '../../store/useAppStore'
 import type { ConversationMeta } from '../../store/useAppStore'
 import { PanelCollapseButton } from '../../components/PanelCollapseButton'
 import { TextInputModal } from '../layers/TextInputModal'
-import {
-  deleteLayer as apiDeleteLayer,
-  fetchAllGeojson,
-  fetchLayers,
-  openProjectFolder,
-  renameProject,
-  toLayer,
-} from '../../lib/api'
-import { setGeojsonCache } from '../map/mapLayers'
+import { deleteLayer as apiDeleteLayer, openProjectFolder, renameProject } from '../../lib/api'
 import type { ProjectFile, ProjectInfo } from '../../lib/api'
 
 /** 可折叠分区：标题行点击展开/收起（全部项目 / 数据文件共用）。默认展开。 */
@@ -271,9 +263,7 @@ export function ProjectPanel() {
     }
     if (current?.id) void openProjectDetail(current.id)
     try {
-      const [fresh, geojson] = await Promise.all([fetchLayers(), fetchAllGeojson()])
-      useAppStore.setState({ layers: fresh.map(toLayer) })
-      setGeojsonCache(geojson)
+      await refreshLayersIncremental()
     } catch {
       // 刷新失败保持现状，删除本身已成功
     }

@@ -266,7 +266,7 @@ export function buildDeckLayers(
   styles: Record<string, LayerStyle> = {},
 ): Layer[] {
   return layers
-    .filter((layer) => layer.visible)
+    .filter((layer) => layer.visible && layer.geometry !== 'Table')
     .flatMap((layer): Layer[] => {
       if (layer.kind === 'raster') {
         // DEM 高程图层 → 真 3D 地形网格；普通栅格 → 平铺贴图

@@ -46,8 +46,8 @@ export const patchLayerStyle = (layerId: string, patch: Record<string, unknown>)
 export interface BackendLayer {
   id: string
   name: string
-  source: 'platform' | 'uploaded' | 'generated' | 'drawn'
-  geometry: 'Polygon' | 'Point' | 'LineString'
+  source: 'platform' | 'uploaded' | 'generated' | 'drawn' | 'folder'
+  geometry: 'Polygon' | 'Point' | 'LineString' | 'Table'
   color: string
   visible?: boolean
   feature_count: number
@@ -57,6 +57,12 @@ export interface BackendLayer {
   fields?: Array<{ name: string; type: string; description?: string | null }>
   /* 平台数据（2026-08-17）：只读底座 + 惰性几何 */
   readonly?: boolean
+  /* 源数据磁盘路径（folder 目录/uploaded 数据；后端 model 字段 data_path） */
+  data_path?: string | null
+  /* folder 源图层源内相对路径（后端 model 字段 rel_path） */
+  rel_path?: string | null
+  /* 源文件格式（后端 model 字段 data_type） */
+  data_type?: string | null
   lazy?: boolean
   kind?: 'vector' | 'raster'
   tile_url?: string
@@ -629,6 +635,9 @@ export function toLayer(layer: BackendLayer): LayerMetadata {
     generatedBy: layer.generated_by,
     fields: layer.fields,
     readonly: layer.readonly ?? false,
+    dataPath: layer.data_path ?? null,
+    relPath: layer.rel_path ?? null,
+    dataType: layer.data_type ?? null,
     lazy: layer.lazy ?? false,
     kind: layer.kind ?? 'vector',
     tileUrl: layer.tile_url,
@@ -834,3 +843,161 @@ export const triggerEvalRun = (body: { set: string; tier: string; exclude_dep?: 
   request<{ run_id: string }>('/eval/run', { method: 'POST', body: JSON.stringify(body) })
 export const fetchEvalRun = (runId: string) =>
   request<EvalRunStatus>(`/eval/runs/${encodeURIComponent(runId)}`)
+
+/* ---------------- 本地数据目录接入（第一步「只读发现」） ---------------- */
+
+export type DatasetStatus = 'discovered' | 'enableable' | 'query_only' | 'unavailable'
+
+export interface FolderField {
+  name: string
+  type: string
+}
+
+export interface FolderDataset {
+  dataset_id: string
+  name: string
+  rel_path: string
+  format: string
+  size: number
+  fields: FolderField[]
+  crs: string | null
+  coord_columns: string[] | null
+  geometry: string | null
+  feature_count: number | null
+  status: DatasetStatus
+  reason: string | null
+  warnings: string[]
+  enabled: boolean
+  layer_id: string | null
+  /** 栅格影像元数据（tif 探测结果） */
+  raster?: {
+    width: number
+    height: number
+    bands: number
+    dtype?: string | null
+    crs?: string | null
+    res_x?: number | null
+    res_y?: number | null
+    bounds?: number[] | null
+    nodata?: number | null
+    color_interpretation?: string[] | null
+    preview_image?: string | null
+    preview_note?: string | null
+  } | null
+}
+
+export interface FolderSource {
+  source_id: string
+  alias: string
+  root_path: string
+  created_at: string
+  last_scanned_at: string
+  datasets: FolderDataset[]
+}
+
+export const fetchDataSources = () =>
+  request<{ sources: FolderSource[]; allowlist: string[] }>('/api/data-sources')
+
+export const rescanDataFolder = (sourceId: string) =>
+  request<FolderSource>(`/api/data-sources/${encodeURIComponent(sourceId)}/rescan`, { method: 'POST' })
+
+export const unlinkDataFolder = (sourceId: string) =>
+  request<{ ok: boolean }>(`/api/data-sources/${encodeURIComponent(sourceId)}`, { method: 'DELETE' })
+
+export const addAllowlistRoot = (rootPath: string) =>
+  request<{ roots: string[] }>('/api/data-sources/allowlist', {
+    method: 'POST',
+    body: JSON.stringify({ root_path: rootPath }),
+  })
+
+/** 弹出系统原生文件夹选择器，返回用户选中的目录路径（取消返回 null）。 */
+export const browseFolder = () =>
+  request<{ path: string | null; cancelled: boolean }>('/api/data-sources/browse-folder', {
+    method: 'POST',
+  })
+
+/** 把「可直接启用」的数据集启用为项目图层（第二步「小数据启用」）。 */
+export const enableDataset = (sourceId: string, datasetId: string) =>
+  request<{ layer_id: string; name: string; feature_count: number; geometry_types: string[]; crs: string }>(
+    `/api/data-sources/${encodeURIComponent(sourceId)}/datasets/${encodeURIComponent(datasetId)}/enable`,
+    { method: 'POST' },
+  )
+
+/** 停用一个已启用数据集（移除其图层，幂等）。 */
+export const disableDataset = (sourceId: string, datasetId: string) =>
+  request<{ ok: boolean; already_disabled: boolean; message: string }>(
+    `/api/data-sources/${encodeURIComponent(sourceId)}/datasets/${encodeURIComponent(datasetId)}/disable`,
+    { method: 'POST' },
+  )
+
+/** 文件夹级全部启用（硬上限 20 + 512MB 软预算）。folderPath 非空时仅启用该子目录前缀下数据集。
+ *  dryRun=true 只返回后端算好的计划（planned_count/estimated_features/capped），不真正启用，
+ *  供确认框展示与后端一致的数字（不得臆断一定计划 20 个）。 */
+export const enableAllDatasets = (sourceId: string, folderPath?: string, dryRun = false) => {
+  const params = new URLSearchParams()
+  if (folderPath) params.set('folder_path', folderPath)
+  if (dryRun) params.set('dry_run', '1')
+  const qs = params.toString()
+  return request<{
+    enabled: number
+    count: number
+    failed: Array<{ dataset_id: string; error: string }>
+    total_candidates: number
+    planned_count: number
+    omitted_count: number
+    estimated_features: number
+    estimated_bytes: number
+    capped: boolean
+    capped_by_limit: boolean
+    capped_by_bytes: boolean
+    dry_run?: boolean
+  }>(
+    `/api/data-sources/${encodeURIComponent(sourceId)}/enable-all${qs ? `?${qs}` : ''}`,
+    { method: 'POST' },
+  )
+}
+
+/** 文件夹级全部停用。folderPath 非空时仅停用该子目录前缀下已启用数据集。 */
+export const disableAllDatasets = (sourceId: string, folderPath?: string) => {
+  const params = new URLSearchParams()
+  if (folderPath) params.set('folder_path', folderPath)
+  const qs = params.toString()
+  return request<{ disabled: number; count: number }>(
+    `/api/data-sources/${encodeURIComponent(sourceId)}/disable-all${qs ? `?${qs}` : ''}`,
+    { method: 'POST' },
+  )
+}
+
+/** 获取当前下载目录（联网取数默认落盘位置）。 */
+export const fetchDownloadFolder = () =>
+  request<{ path: string | null }>('/api/data-sources/download-folder')
+
+/** 设置下载目录：联网取数（OSM/高德/datasource）默认落盘到该本地文件夹。 */
+export const setDownloadFolder = (rootPath: string) =>
+  request<{ path: string; source_id: string }>('/api/data-sources/download-folder', {
+    method: 'POST',
+    body: JSON.stringify({ root_path: rootPath }),
+  })
+
+/** 链接本地数据目录：失败时抛出带后端中文 detail 的错误（含 403 白名单拒绝）。 */
+export async function linkDataFolder(rootPath: string, alias?: string): Promise<FolderSource> {
+  const response = await fetch(`${API_BASE}/api/data-sources/link`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ root_path: rootPath, alias }),
+  })
+  if (!response.ok) {
+    let detail = ''
+    try {
+      const body = await response.json()
+      detail = (body as { detail?: string }).detail ?? ''
+    } catch {
+      /* 忽略非 JSON 响应体 */
+    }
+    const msg = detail || `API ${response.status} /api/data-sources/link`
+    const err = new Error(msg) as Error & { status?: number }
+    err.status = response.status
+    throw err
+  }
+  return (await response.json()) as FolderSource
+}

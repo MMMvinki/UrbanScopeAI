@@ -71,7 +71,7 @@ export function PreviewModal({ layerId, onClose }: PreviewModalProps) {
             <h3 className="modal__title">属性表</h3>
             <p className="modal__desc">
               {layer.name} · {data.features.length} 个要素 · 几何类型{' '}
-              {data.geometryTypes.join(' / ')}
+              {data.geometryTypes.length ? data.geometryTypes.join(' / ') : '表格'}
               {query.trim() && ` · 搜索命中 ${rows.length} 行`}
             </p>
           </div>

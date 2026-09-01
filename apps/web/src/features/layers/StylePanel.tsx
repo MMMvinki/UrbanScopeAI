@@ -214,9 +214,10 @@ export function StylePanel({ layerId, onClose }: StylePanelProps) {
   }, [layer, features])
 
   // 打开样式面板时确保图层几何已加载：懒加载平台图层未点亮时地图为空，
-  // 此时改填充色/透明度在地图上"没反应"，会误判成调不了。（栅格图层走瓦片，无 GeoJSON 可拉）
+  // 此时改填充色/透明度在地图上"没反应"，会误判成调不了。（栅格图层走瓦片，无 GeoJSON 可拉；
+  // Table 图层无几何、不进地图渲染，只在打开属性表 PreviewModal 时按需取，不在样式面板误取）
   useEffect(() => {
-    if (layer?.lazy && layer.kind !== 'raster' && !hasLayerGeojson(layerId)) {
+    if (layer?.lazy && layer.kind !== 'raster' && layer.geometry !== 'Table' && !hasLayerGeojson(layerId)) {
       void ensureLayerGeojson(layerId).then((ok) => {
         if (ok) useAppStore.setState((s) => ({ geojsonTick: s.geojsonTick + 1 }))
       })

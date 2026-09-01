@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Eye, EyeOff, GripVertical, Lock, MoreHorizontal } from 'lucide-react'
+import { ChevronDown, ChevronRight, Eye, EyeOff, GripVertical, Lock, MoreHorizontal } from 'lucide-react'
 import type { DragEvent, KeyboardEvent, PointerEvent } from 'react'
 import type { LayerAction, LayerMetadata } from './layerTypes'
 import { LayerMenu } from './LayerMenu'
@@ -10,6 +10,27 @@ const sourceLabel: Record<LayerMetadata['source'], string> = {
   uploaded: '上传数据',
   generated: '生成数据',
   drawn: '手绘数据',
+  folder: '目录数据',
+}
+
+/** 图层数据类型角标：几何（点/线/面/表格/栅格）+ 源文件格式（CSV/SHP/…），便于快速识别图层。 */
+function layerTypeTag(layer: LayerMetadata): string {
+  if (layer.kind === 'raster') return '栅格'
+  const geom: Record<LayerMetadata['geometry'], string> = {
+    Point: '点',
+    LineString: '线',
+    Polygon: '面',
+    Table: '表格',
+  }
+  const g = geom[layer.geometry] ?? ''
+  let fmt = (layer.dataType ?? '').toUpperCase()
+  // 兜底：dataType 为空（旧图层无该字段）时从 relPath/dataPath 文件后缀推导，如 .csv → CSV
+  if (!fmt) {
+    const m = ((layer.relPath ?? layer.dataPath) ?? '').match(/\.([A-Za-z0-9]+)$/)
+    if (m) fmt = m[1].toUpperCase()
+  }
+  if (g && fmt) return `${g} · ${fmt}`
+  return g || fmt || ''
 }
 
 interface LayerRowProps {
@@ -73,6 +94,8 @@ export function LayerRow({
   const [draft, setDraft] = useState(layer.name)
   const inputRef = useRef<HTMLInputElement>(null)
   const cancelRef = useRef(false)
+  // 卡片折叠：默认只显示名字+类型标签；几何/要素数/CRS/数据路径等详细收进展开（让一屏看到更多图层）
+  const [showDetail, setShowDetail] = useState(false)
 
   // 进入编辑态（点击名字 / 菜单「重命名」）：初始化值并聚焦全选
   useEffect(() => {
@@ -214,16 +237,21 @@ export function LayerRow({
                 <Lock aria-hidden="true" />
               </span>
             )}
-            <span className="layer-row__source">
-              {layer.kind === 'raster' ? '栅格' : sourceLabel[layer.source]}
-            </span>
+            <span className="layer-row__source">{layerTypeTag(layer)}</span>
           </button>
         )}
-        <p className="layer-row__sub">
-          {layer.geometry} · {layer.featureCount} 个要素 · {layer.crs}
-          {layer.lazy && layer.featureCount > 0 && <span className="layer-row__lazy">按需加载</span>}
-        </p>
       </div>
+
+      <button
+        type="button"
+        className="layer-row__expand"
+        onClick={() => setShowDetail((v) => !v)}
+        aria-label={showDetail ? `收起 ${layer.name} 详情` : `展开 ${layer.name} 详情`}
+        aria-expanded={showDetail}
+        title="展开/收起图层详情"
+      >
+        {showDetail ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+      </button>
 
       <div className="layer-row__menu-wrap">
         <button
@@ -236,9 +264,37 @@ export function LayerRow({
           <MoreHorizontal aria-hidden="true" />
         </button>
         {menuOpen && (
-          <LayerMenu onClose={onCloseMenu} onAction={onAction} readonly={layer.readonly} editable={layer.source === 'drawn' && !layer.readonly} />
+          <LayerMenu
+            onClose={onCloseMenu}
+            onAction={onAction}
+            readonly={layer.readonly}
+            editable={layer.source === 'drawn' && !layer.readonly}
+            table={layer.geometry === 'Table'}
+            dataPath={layer.dataPath}
+          />
         )}
       </div>
+      {showDetail && (
+        <div className="layer-row__detail">
+          <p className="layer-row__detail-line">
+            几何：{layer.geometry === 'Table' ? '表格' : layer.geometry} · {layer.featureCount} 个要素 · {layer.crs}
+          </p>
+          <p className="layer-row__detail-line">
+            {layer.lazy && layer.featureCount > 0 ? '按需加载 · ' : ''}来源：{sourceLabel[layer.source]}
+          </p>
+          {layer.dataPath && (
+            <p
+              className="layer-row__detail-line layer-row__detail-path"
+              title={layer.dataPath}
+              onClick={() => {
+                void navigator.clipboard?.writeText(layer.dataPath ?? '')
+              }}
+            >
+              数据路径：{layer.dataPath}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

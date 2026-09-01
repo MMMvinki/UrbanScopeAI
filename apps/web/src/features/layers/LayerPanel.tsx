@@ -1,7 +1,8 @@
-import { Fragment, useState } from 'react'
-import { ChevronDown, ChevronRight, Folder, ListChecks, Lock, Pencil, Plus, Trash2, Users, X } from 'lucide-react'
-import type { DragEvent } from 'react'
-import type { LayerAction } from './layerTypes'
+import { Fragment, useEffect, useState } from 'react'
+import { ChevronDown, ChevronRight, Folder, FolderOpen, ListChecks, Lock, Pencil, Plus, Trash2, Users, X } from 'lucide-react'
+import type { DragEvent, ReactNode } from 'react'
+import type { LayerAction, LayerMetadata } from './layerTypes'
+import { fetchDataSources, type FolderSource } from '../../lib/api'
 import { LayerRow } from './LayerRow'
 import { PanelCollapseButton } from '../../components/PanelCollapseButton'
 import { LayerLegend } from './LayerLegend'
@@ -9,6 +10,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { StylePanel } from './StylePanel'
 import { PreviewModal } from './PreviewModal'
 import { GroupDialog } from './GroupDialog'
+import { FolderSourcesSection } from './FolderSourcesSection'
 
 type ModalKind = 'style' | 'preview' | 'group'
 
@@ -16,6 +18,174 @@ type ModalKind = 'style' | 'preview' | 'group'
 interface DropTarget {
   layerId: string
   position: 'above' | 'below'
+}
+
+/* ── 「我的数据」文件路径视图（第 5 项）：已启用图层按来源文件夹归类 ────── */
+
+interface PathDir {
+  kind: 'dir'
+  name: string
+  children: PathNode[]
+}
+interface PathLeaf {
+  kind: 'layer'
+  layerId: string
+}
+type PathNode = PathDir | PathLeaf
+
+function isPathDir(n: PathNode): n is PathDir {
+  return n.kind === 'dir'
+}
+
+function countPathLeaves(nodes: PathNode[]): number {
+  return nodes.reduce((sum, n) => sum + (isPathDir(n) ? countPathLeaves(n.children) : 1), 0)
+}
+
+/** 已启用图层按路径建树：folder 用 rel_path 细分子文件夹，其余回退 data_path；无任何路径归「未关联文件夹」。
+ *  只基于已在「我的数据」的图层（=已启用数据），不会再混入未启用文件。
+ *  noPathDirName 传 null 时，无路径图层直接平铺为根级叶子（用于「未关联文件夹」组，
+ *  避免组 header 与内层目录重复一层同名目录）。 */
+function buildLayerPathTree(
+  layers: LayerMetadata[],
+  resolvePath?: (l: LayerMetadata) => string | null,
+  noPathDirName: string | null = '未关联文件夹',
+): PathDir {
+  const root: PathDir = { kind: 'dir', name: '', children: [] }
+  const noPath: LayerMetadata[] = []
+  for (const l of layers) {
+    const raw = resolvePath ? resolvePath(l) : (l.relPath ?? l.dataPath)
+    if (!raw) {
+      noPath.push(l)
+      continue
+    }
+    const parts = raw.replace(/\\/g, '/').split('/').filter(Boolean)
+    let node = root
+    for (let i = 0; i < parts.length - 1; i++) {
+      let child = node.children.find((c) => isPathDir(c) && c.name === parts[i]) as PathDir | undefined
+      if (!child) {
+        child = { kind: 'dir', name: parts[i], children: [] }
+        node.children.push(child)
+      }
+      node = child
+    }
+    node.children.push({ kind: 'layer', layerId: l.id })
+  }
+  if (noPath.length > 0) {
+    if (noPathDirName) {
+      root.children.push({
+        kind: 'dir',
+        name: noPathDirName,
+        children: noPath.map((l) => ({ kind: 'layer', layerId: l.id })),
+      })
+    } else {
+      const leaves: PathLeaf[] = noPath.map((l) => ({ kind: 'layer', layerId: l.id }))
+      root.children.push(...leaves)
+    }
+  }
+  const sortNodes = (nodes: PathNode[]): PathNode[] => {
+    nodes.sort((a, b) => {
+      const aDir = isPathDir(a) ? 0 : 1
+      const bDir = isPathDir(b) ? 0 : 1
+      if (aDir !== bDir) return aDir - bDir
+      const an = isPathDir(a) ? a.name : a.layerId
+      const bn = isPathDir(b) ? b.name : b.layerId
+      return an.localeCompare(bn, 'zh')
+    })
+    nodes.forEach((n) => {
+      if (isPathDir(n)) sortNodes(n.children)
+    })
+    return nodes
+  }
+  sortNodes(root.children)
+  return root
+}
+
+/** 规范化路径：统一正斜杠、去重复斜杠和 `.` 段、去末尾斜杠；Windows 盘符小写化（用于不区分大小写比较）。 */
+function normalizePath(p: string): string {
+  let s = (p ?? '').replace(/\\/g, '/')
+  const isUnc = s.startsWith('//')
+  s = s.replace(/\/{2,}/g, '/')
+  if (isUnc) s = `/${s}`
+  const stack: string[] = []
+  for (const part of s.split('/')) {
+    if (part === '' || part === '.') continue
+    if (part === '..') {
+      stack.pop()
+      continue
+    }
+    stack.push(part)
+  }
+  let out = stack.join('/').replace(/\/+$/, '')
+  out = out.replace(/^([a-zA-Z]):/, (_m, drive: string) => drive.toLowerCase() + ':')
+  if (isUnc) out = `/${out}`
+  return out
+}
+
+/** Windows 路径按不区分大小写比较（驱动器号 + 目录大小写差异都兼容） */
+function pathKey(p: string): string {
+  return normalizePath(p).toLowerCase()
+}
+
+/** 把图层的 data_path 匹配到某个文件夹数据源根目录（链接目录/下载目录均为 folder 源）。
+ *  多个根目录都命中时选最长根目录（嵌套来源不归到外层）。
+ *  命中返回 [source_id, 相对该源根的 rel_path]，否则返回 null。 */
+function matchLayerSource(l: LayerMetadata, sources: FolderSource[]): [string, string] | null {
+  if (!l.dataPath) return null
+  const dp = normalizePath(l.dataPath)
+  const dpKey = pathKey(l.dataPath)
+  let best: { sourceId: string; rel: string; rootLen: number } | null = null
+  for (const s of sources) {
+    const root = normalizePath(s.root_path)
+    const rootKey = pathKey(s.root_path)
+    if (dpKey === rootKey || dpKey.startsWith(rootKey + '/')) {
+      const rel = dpKey === rootKey ? '' : dp.slice(root.length + 1)
+      if (!best || root.length > best.rootLen) {
+        best = { sourceId: s.source_id, rel, rootLen: root.length }
+      }
+    }
+  }
+  if (!best) return null
+  // rel_path（folder 源图层登记的相对路径）优先，比从 data_path 反推更稳定
+  return [best.sourceId, l.relPath ?? best.rel]
+}
+
+/** 递归渲染文件路径目录节点（复用 folder-tree-dir 外观；叶为图层行 renderLeaf）。 */
+function PathDirNode({
+  node,
+  depth,
+  renderLeaf,
+}: {
+  node: PathDir
+  depth: number
+  renderLeaf: (layerId: string) => ReactNode
+}) {
+  const [expanded, setExpanded] = useState(depth < 1)
+  return (
+    <div className="folder-tree-dir">
+      <div className="folder-tree-dir__row">
+        <button
+          type="button"
+          className="folder-tree-dir__header"
+          style={{ paddingLeft: 8 + depth * 14 }}
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+        >
+          {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+          <Folder aria-hidden="true" />
+          <span className="folder-tree-dir__name">{node.name}</span>
+          <span className="folder-tree-dir__count">{countPathLeaves(node.children)} 图层</span>
+        </button>
+      </div>
+      {expanded &&
+        node.children.map((child) =>
+          isPathDir(child) ? (
+            <PathDirNode key={child.name} node={child} depth={depth + 1} renderLeaf={renderLeaf} />
+          ) : (
+            <Fragment key={child.layerId}>{renderLeaf(child.layerId)}</Fragment>
+          ),
+        )}
+    </div>
+  )
 }
 
 export function LayerPanel() {
@@ -42,6 +212,17 @@ export function LayerPanel() {
   // 多选删除：多选模式 + 已选图层 id 集合（平台只读图层不可选）
   const [selectMode, setSelectMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // 「我的数据」视图切换（第 5 项）：图层视图（分组平铺） / 文件路径视图（已启用图层按来源文件夹归类）
+  const [myDataView, setMyDataView] = useState<'layer' | 'path'>('layer')
+  // 文件路径视图用：文件夹数据源根目录（含下载目录），把图层 data_path 归类到对应来源
+  // 数据源版本号变化（新增/取消链接、下载目录保存、重扫）时重新拉取，归组保持最新
+  const folderSourcesTick = useAppStore((s) => s.folderSourcesTick)
+  const [folderSources, setFolderSources] = useState<FolderSource[]>([])
+  useEffect(() => {
+    fetchDataSources()
+      .then((r) => setFolderSources(r.sources))
+      .catch(() => {})
+  }, [folderSourcesTick])
 
   const enterSelectMode = () => {
     setSelectMode(true)
@@ -134,6 +315,11 @@ export function LayerPanel() {
       case 'preview':
         setModal({ layerId, kind: 'preview' })
         break
+      case 'data-path':
+        if (layer?.dataPath) {
+          window.alert(`该图层源数据路径：\n${layer.dataPath}`)
+        }
+        break
       case 'edit':
         // 手绘图层：进入地图编辑会话（载入几何 → select 拖顶点 → 完成时 PUT 保存）
         if (layer?.source === 'drawn' && !layer.readonly) requestEditDrawnLayer(layerId)
@@ -168,6 +354,38 @@ export function LayerPanel() {
   // 「我的数据」折叠组计数 = 分组内成员 + 未分组
   const myDataCount =
     groups.reduce((count, group) => count + group.layerIds.length, 0) + ungrouped.length
+  // 「我的数据」已启用图层全集（平台只读底座之外），文件路径视图按来源文件夹归类
+  const myDataLayers = layers.filter((l) => !(l.source === 'platform' && l.readonly))
+  // 文件路径视图：把已启用图层按「匹配到的文件夹数据源」分组，组内再按 rel_path 建树；无来源归「未关联文件夹」
+  const srcById = new Map(folderSources.map((s) => [s.source_id, s]))
+  // pathGroups 以 source_id 为 key（alias 只做展示）：同名来源不合并，React key 不冲突
+  const pathGroups: Array<{ sourceId: string; alias: string; layers: LayerMetadata[] }> = []
+  const unmatchedLayers: LayerMetadata[] = []
+  for (const l of myDataLayers) {
+    const m = matchLayerSource(l, folderSources)
+    if (m) {
+      const sourceId = m[0]
+      const alias = srcById.get(sourceId)?.alias ?? sourceId
+      const g = pathGroups.find((group) => group.sourceId === sourceId)
+      if (g) g.layers.push(l)
+      else pathGroups.push({ sourceId, alias, layers: [l] })
+    } else {
+      unmatchedLayers.push(l)
+    }
+  }
+  // 「未关联文件夹」固定最后（排在所有已匹配来源之后），避免与外层/内层同名目录混淆
+  const layerPathGroups = myDataView === 'path'
+    ? pathGroups.map((g) => ({
+        sourceId: g.sourceId,
+        alias: g.alias,
+        layers: g.layers,
+        tree: buildLayerPathTree(g.layers, (l) => matchLayerSource(l, folderSources)?.[1] ?? null),
+      })).concat(
+        unmatchedLayers.length
+          ? [{ sourceId: '__unmatched__', alias: '未关联文件夹', layers: unmatchedLayers, tree: buildLayerPathTree(unmatchedLayers, undefined, null) }]
+          : [],
+      )
+    : null
 
   const handleDragStart = (_event: DragEvent<HTMLDivElement>, layerId: string) => {
     setDragFromId(layerId)
@@ -298,7 +516,11 @@ export function LayerPanel() {
         </div>
       )}
 
-      {layers.length === 0 ? (
+      {/* 数据目录 + 图层列表统一滚动，避免数据多时被裁掉、看不到滚动条 */}
+      <div className="layer-panel__scroll scroll-area">
+        <FolderSourcesSection />
+
+        {layers.length === 0 ? (
         <div className="empty-state">
           <p className="empty-state__title">暂无图层</p>
           <p className="empty-state__hint">上传数据文件，或启用平台数据。</p>
@@ -366,23 +588,69 @@ export function LayerPanel() {
               </button>
               {myDataExpanded && (
                 <div className="layer-group__body">
-                  {groups.map((group) => (
-                    <div className="layer-group" key={group.id}>
+                  <div className="layer-view-toggle" role="tablist" aria-label="我的数据视图">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={myDataView === 'layer'}
+                      className={myDataView === 'layer' ? 'is-active' : ''}
+                      onClick={() => setMyDataView('layer')}
+                      title="按图层分组平铺查看"
+                    >
+                      图层
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={myDataView === 'path'}
+                      className={myDataView === 'path' ? 'is-active' : ''}
+                      onClick={() => setMyDataView('path')}
+                      title="按源数据文件路径组织查看"
+                    >
+                      文件路径
+                    </button>
+                  </div>
+                  {myDataView === 'layer' ? (
+                    <>
+                      {groups.map((group) => (
+                        <div className="layer-group" key={group.id}>
+                          <div className="layer-group__header">
+                            <Folder aria-hidden="true" />
+                            <span className="layer-group__name">{group.name}</span>
+                            <span className="layer-group__count">{group.layerIds.length}</span>
+                          </div>
+                          {group.layerIds.map((layerId) => renderRow(layerId))}
+                        </div>
+                      ))}
+                      {ungrouped.map((layer) => renderRow(layer.id))}
+                    </>
+                  ) : (layerPathGroups ?? []).map((g) => (
+                    <div className="layer-group" key={g.sourceId}>
                       <div className="layer-group__header">
-                        <Folder aria-hidden="true" />
-                        <span className="layer-group__name">{group.name}</span>
-                        <span className="layer-group__count">{group.layerIds.length}</span>
+                        {g.alias === '未关联文件夹' ? (
+                          <FolderOpen aria-hidden="true" />
+                        ) : (
+                          <Folder aria-hidden="true" />
+                        )}
+                        <span className="layer-group__name">{g.alias}</span>
+                        <span className="layer-group__count">{g.layers.length} 图层</span>
                       </div>
-                      {group.layerIds.map((layerId) => renderRow(layerId))}
+                      {g.tree.children.map((child) =>
+                        isPathDir(child) ? (
+                          <PathDirNode key={child.name} node={child} depth={0} renderLeaf={renderRow} />
+                        ) : (
+                          <Fragment key={child.layerId}>{renderRow(child.layerId)}</Fragment>
+                        ),
+                      )}
                     </div>
                   ))}
-                  {ungrouped.map((layer) => renderRow(layer.id))}
                 </div>
               )}
             </div>
           )}
         </div>
       )}
+      </div>
 
       {modal?.kind === 'style' && (
         <StylePanel layerId={modal.layerId} onClose={() => setModal(null)} />

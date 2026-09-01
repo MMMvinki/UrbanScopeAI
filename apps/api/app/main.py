@@ -18,7 +18,7 @@ from app.agent.executor import execute
 from app.agent.memory import MEMORY
 from app.agent.planner import plan_for
 from app.archive import RunArchive, RunIndex
-from app.data_registry import DATA_REGISTRY
+from app.data_registry import DATA_REGISTRY, save_layer_meta
 from app.eval import jobs as eval_jobs
 from app.eval import loader as eval_loader
 from app.eval.report import EVAL_REPORTS_DIR, summarize as eval_summarize
@@ -61,6 +61,7 @@ from app.tools import TOOLS, ToolSpec
 from app.tools.context import ToolContext
 from app.tools.shelf import catalog_tools
 from app.upload_service import UploadError, ingest_upload, stage_upload as stage_upload_service
+from app.data_folder_routes import router as data_folder_router
 from app.workspace import (
     DEM_TILES_DIR,
     DEM_TERRAIN_DIR,
@@ -112,6 +113,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# 本地数据目录接入（第一步「只读发现」）：链接/扫描/白名单/取消链接
+app.include_router(data_folder_router)
 
 
 @app.get("/health")
@@ -227,6 +231,10 @@ def delete_layer(layer_id: str) -> dict[str, str]:
     if layer.readonly:
         raise HTTPException(status_code=400, detail=f"平台数据只读，不可删除：{layer_id}")
     DATA_REGISTRY.delete_layer(layer_id)
+    # 同步数据目录状态：图层被删后目录里对应数据集回「未启用」（防重扫/切换后状态漂移）
+    from app.data_folder import mark_layer_removed
+
+    mark_layer_removed(layer_id)
     return {"deleted": layer_id}
 
 
@@ -284,6 +292,10 @@ def draw_layer(body: DrawLayerRequest) -> dict:
         (LAYER_DATA_DIR / f"{layer_id}.json").write_text(
             json.dumps(fc, ensure_ascii=False), encoding="utf-8"
         )
+        # 保存最终注册对象（含自动颜色/继承样式），保证侧车与注册表一致
+        final_layer = DATA_REGISTRY.get_layer(layer_id)
+        if final_layer is not None:
+            save_layer_meta(final_layer)
     except OSError:
         pass
     return {
@@ -313,22 +325,19 @@ def update_layer_geojson(layer_id: str, body: UpdateLayerGeojsonRequest) -> Laye
     fc: dict = {"type": "FeatureCollection", "features": features}
     if isinstance(body.geojson, dict) and body.geojson.get("crs"):
         fc["crs"] = body.geojson["crs"]
-    new = LayerMetadata(
-        id=layer_id,
-        name=layer.name,
-        source=layer.source,
-        geometry=geometry_type_for(geometry_types),
-        color=layer.color,
-        visible=layer.visible,
-        feature_count=len(features),
-        crs=layer.crs,
-        description=layer.description,
-        generated_by=layer.generated_by,
-        fields=body.fields or build_fields_from_features(features),
-        units=body.units or layer.units,
-        readonly=False,
-        lazy=False,
-        kind=layer.kind,
+    # 用旧 metadata 的 model_copy(update=...) 方式构造 new：保留 data_path/rel_path/data_type/
+    # source 等路径与来源字段，编辑几何不丢「文件路径视图」与来源徽章信息。
+    new_geometry = geometry_type_for(geometry_types) if geometry_types else layer.geometry
+    new = layer.model_copy(
+        update={
+            "geometry": new_geometry,
+            "feature_count": len(features),
+            "fields": body.fields or build_fields_from_features(features),
+            "units": body.units or layer.units,
+            "readonly": False,
+            "lazy": False,
+            "bbox": bbox,  # 编辑几何后 bbox 随之更新（新计算的真实范围）
+        }
     )
     DATA_REGISTRY.register_generated(new, geojson=fc)
     # 物化到磁盘（复用 /layers/draw 的写盘路径；失败不致命，内存已可见）
@@ -337,6 +346,10 @@ def update_layer_geojson(layer_id: str, body: UpdateLayerGeojsonRequest) -> Laye
         (LAYER_DATA_DIR / f"{layer_id}.json").write_text(
             json.dumps(fc, ensure_ascii=False), encoding="utf-8"
         )
+        # 保存最终注册对象（已含 register_generated 继承的样式/自动颜色），保证侧车与注册表一致
+        final_layer = DATA_REGISTRY.get_layer(layer_id)
+        if final_layer is not None:
+            save_layer_meta(final_layer)
     except OSError:
         pass
     return new
@@ -571,6 +584,8 @@ def api_project_detail(project_id: str) -> ProjectDetail:
     files: list[dict] = []
     on_map = DATA_REGISTRY.project_layer_ids() if DATA_REGISTRY.current_project_id == project_id else set()
     for path in sorted(project_layer_dir(project_id).glob("*.json")):
+        if path.name.endswith(".meta.json"):
+            continue  # 元数据侧车（<id>.meta.json）不是数据文件，不能列进数据清单
         feature_count = 0
         try:
             feature_count = len(json.loads(path.read_text(encoding="utf-8")).get("features", []))

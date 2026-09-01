@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.data_registry import DATA_REGISTRY
 from app.gis import engine
+from app.models.layer import GeometryType
 from app.models.tool import ToolResult
 
 
@@ -29,6 +30,8 @@ def run_coverage(params: CoverageParams | dict) -> ToolResult:
             output={"layer_id": params.layer_id, "reason": "missing_param"},
             message=f"未找到图层：{params.layer_id}",
         )
+    if layer.geometry == GeometryType.table:
+        return ToolResult(success=False, message=f"「{layer.name}」是表格图层，无空间几何，无法计算覆盖率")
     # base 图层是覆盖率的比对底盘；缺失会让 engine.coverage 返回 None 而被误判为
     # 「图层在但退化」。先显式预检，把「base 缺失」这一原因说清楚。
     base_layer = DATA_REGISTRY.get_layer(engine.DEFAULT_COVERAGE_BASE)

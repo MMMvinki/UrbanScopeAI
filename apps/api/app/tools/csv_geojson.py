@@ -195,8 +195,24 @@ def run_csv_to_geojson(params: dict) -> ToolResult:
         return ToolResult(success=False, message=f"CSV 转换失败: {exc}")
 
 
+def _detect_encoding(head: bytes) -> str:
+    """BOM / 试探 utf-8 → 兜底 gb18030，与数据目录扫描器保持一致（数据目录的 GBK CSV 也能启用）。"""
+    if head.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    if head.startswith(b"\xff\xfe") or head.startswith(b"\xfe\xff"):
+        return "utf-16"
+    try:
+        head.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "gb18030"
+
+
 def _read_csv(path: Path, delimiter: str | None) -> tuple[list[dict], list[str]]:
-    with open(path, "r", encoding="utf-8-sig") as f:
+    with open(path, "rb") as f:
+        head = f.read(8192)
+    encoding = _detect_encoding(head)
+    with open(path, "r", encoding=encoding, errors="replace") as f:
         if not delimiter:
             sample = f.read(4096)
             f.seek(0)

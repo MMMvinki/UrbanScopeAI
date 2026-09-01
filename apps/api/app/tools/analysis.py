@@ -8,6 +8,7 @@ dict 入参（LLM 工具调用传入），统一返回 ToolResult。
 
 from app.data_registry import DATA_REGISTRY
 from app.gis import engine
+from app.models.layer import GeometryType
 from app.models.tool import ToolResult
 
 
@@ -32,6 +33,14 @@ def _resolve(layer_ids: list[str]) -> tuple[list, ToolResult | None]:
     if missing:
         return found, _fail(f"未找到图层：{'、'.join(missing)}")
     return found, None
+
+
+def _reject_tables(*layers) -> ToolResult | None:
+    """空间工具入口拒绝表格图层：无空间几何，不得落入 stable_rate 演示数值。"""
+    for layer in layers:
+        if getattr(layer, "geometry", None) == GeometryType.table:
+            return _fail(f"「{layer.name}」是表格图层，无空间几何，无法进行空间分析")
+    return None
 
 
 def run_list_datasets(params: dict) -> ToolResult:
@@ -93,6 +102,8 @@ def run_spatial_join(params: dict) -> ToolResult:
     overlay = _layer(str(params.get("overlay_layer_id", "")))
     if target is None or overlay is None:
         return _fail("叠加图层解析失败")
+    if err := _reject_tables(target, overlay):
+        return err
     real = engine.spatial_join(target.id, overlay.id)
     if real is not None:
         return ToolResult(
@@ -113,6 +124,8 @@ def run_nearest_distance(params: dict) -> ToolResult:
     reference = _layer(str(params.get("reference_layer_id", "")))
     if target is None or reference is None:
         return _fail("最近距离图层解析失败")
+    if err := _reject_tables(target, reference):
+        return err
     real = engine.nearest_distance(target.id, reference.id)
     if real is not None:
         return ToolResult(
@@ -132,6 +145,8 @@ def run_density(params: dict) -> ToolResult:
     layer = _layer(str(params.get("layer_id", "")))
     if layer is None:
         return _fail(f"未找到图层：{params.get('layer_id')}")
+    if err := _reject_tables(layer):
+        return err
     real = engine.density(layer.id)
     if real is not None:
         return ToolResult(
@@ -147,6 +162,8 @@ def run_supply_demand(params: dict) -> ToolResult:
     population = _layer(str(params.get("population_layer_id", "")))
     if facility is None or population is None:
         return _fail("供需图层解析失败")
+    if err := _reject_tables(facility, population):
+        return err
     real = engine.supply_demand(facility.id, population.id)
     if real is not None:
         return ToolResult(
@@ -168,6 +185,8 @@ def run_buffer(params: dict) -> ToolResult:
     distance = int(params.get("distance", 800))
     if distance <= 0:
         return _fail(f"缓冲区距离必须为正数：{distance}")
+    if err := _reject_tables(layer):
+        return err
     _, geojson = engine.buffer(layer.id, distance)
     if geojson is None:
         return _fail(f"无法生成「{layer.name}」的 {distance}m 缓冲区：图层缺少有效几何")
@@ -200,6 +219,8 @@ def run_spatial_clip(params: dict) -> ToolResult:
     clip_layer = _layer(str(params.get("clip_layer_id", "")))
     if target is None or clip_layer is None:
         return _fail("裁剪图层解析失败：target_layer_id / clip_layer_id 至少一个不存在")
+    if err := _reject_tables(target, clip_layer):
+        return err
     clipped = engine.clip(target.id, clip_layer.id)
     if clipped is None:
         return _fail(f"裁剪计算失败：目标「{target.name}」或边界「{clip_layer.name}」没有可用的几何数据")
@@ -257,6 +278,8 @@ def run_statistics(params: dict) -> ToolResult:
     layers, error = _resolve(layer_ids)
     if error is not None:
         return error
+    if err := _reject_tables(*layers):
+        return err
     warnings: list[str] = []
     summary: dict[str, object] = {}
 

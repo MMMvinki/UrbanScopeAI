@@ -102,13 +102,13 @@ function normalizeGeometry(geometry: GeoJSON.Geometry): GeoJSON.Geometry {
 }
 
 /** 取 Polygon/MultiPolygon 的"首个环"，用于统计有效顶点数（绘制产物恒为单 Polygon，这里兼容一下） */
-function firstRingOf(geometry: GeoJSON.Geometry): number[][] {
+function firstRingOf(geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon): number[][] {
   if (geometry.type === 'MultiPolygon') return geometry.coordinates[0][0]
   return geometry.coordinates[0]
 }
 
 /** 归一化后有效顶点数（不同坐标数量，去重后判断至少 3 个点才能构成面） */
-function polygonDistinctVertexCount(geometry: GeoJSON.Geometry): number {
+function polygonDistinctVertexCount(geometry: GeoJSON.Polygon | GeoJSON.MultiPolygon): number {
   const seen = new Set<string>()
   for (const coord of firstRingOf(geometry)) seen.add(`${coord[0]},${coord[1]}`)
   return seen.size
@@ -125,12 +125,16 @@ function polygonDistinctVertexCount(geometry: GeoJSON.Geometry): number {
 export class TerraDrawController {
   private draw: TerraDraw
   private currentMode: DrawMode = 'select'
+  private onChange?: (fc: GeoJSON.FeatureCollection) => void
+  private onHistory?: (canUndo: boolean, canRedo: boolean) => void
 
   constructor(
     map: MapLibreMap,
-    private onChange?: (fc: GeoJSON.FeatureCollection) => void,
-    private onHistory?: (canUndo: boolean, canRedo: boolean) => void,
+    onChange?: (fc: GeoJSON.FeatureCollection) => void,
+    onHistory?: (canUndo: boolean, canRedo: boolean) => void,
   ) {
+    this.onChange = onChange
+    this.onHistory = onHistory
     this.draw = new TerraDraw({
       adapter: new TerraDrawMapLibreGLAdapter({ map }),
       // 撤销/重做：TerraDraw 1.32.3 内置（modeLevel 单步 + sessionLevel 会话级）：
@@ -141,14 +145,14 @@ export class TerraDrawController {
         sessionLevel: new TerraDrawSessionUndoRedo(),
       },
       modes: [
-        new TerraDrawPointMode({ flags: { disabled: false } }),
-        new TerraDrawLineStringMode({ flags: { disabled: false }, validation: (feature) => {
+        new TerraDrawPointMode(),
+        new TerraDrawLineStringMode({ validation: (feature) => {
           // 线必须至少 2 个点，且不自相交（返回 { valid, reason } 与 Validation 类型一致）
           const coords = feature.geometry.coordinates as unknown as unknown[][]
           if (coords.length < 2) return { valid: false, reason: '线需要至少 2 个点' }
           return ValidateNotSelfIntersecting(feature)
         } }),
-        new TerraDrawPolygonMode({ flags: { disabled: false }, validation: (feature) => {
+        new TerraDrawPolygonMode({ validation: (feature) => {
           // TerraDraw 每次「点击加顶点」都会跑一次 validation：逐顶点增长的中途，环还只有 2 个不同点、面积恒为 0。
           // 若直接用 ValidateMinAreaSquareMeters 会把这些中间态判为非法 → updatePolygon 返回 null →
           // onLeftClick 提前 return，currentCoordinate 卡死，面永远画不出来。所以必须先感知「仍在绘制中」。
@@ -169,7 +173,6 @@ export class TerraDrawController {
         // point 只需 feature.draggable（点无顶点，整体拖即移动）；linestring 额外开启中点插入。
         new TerraDrawSelectMode({
           flags: {
-            disabled: false,
             polygon: {
               feature: { draggable: true, coordinates: { draggable: true } },
             },
@@ -208,7 +211,7 @@ export class TerraDrawController {
 
     // `finish`：某个要素绘制完成 / select 模式完成选择；`change`：几何有变更则回调快照
     this.draw.on('finish', () => this.onChange?.(this.collect()))
-    this.draw.on('change', (ids, type) => {
+    this.draw.on('change', (_ids, type) => {
       // 'styling' 是广告牌色调等非几何变更，不触发快照回传
       if (type !== 'styling') this.onChange?.(this.collect())
     })
@@ -246,7 +249,7 @@ export class TerraDrawController {
         ) {
           return null
         }
-        return { ...feature, geometry, properties }
+        return { ...feature, geometry, properties } as GeoJSON.Feature
       })
       .filter((feature): feature is GeoJSON.Feature => feature !== null)
     return { type: 'FeatureCollection', features }
@@ -280,7 +283,7 @@ export class TerraDrawController {
       .map((feature) => {
         const mode = drawModeForGeometry(feature.geometry?.type)
         if (!mode) return null
-        return { ...feature, properties: { ...(feature.properties ?? {}), mode } }
+        return { ...feature, properties: { ...(feature.properties ?? {}), mode } } as GeoJSON.Feature
       })
       .filter((f): f is GeoJSON.Feature => f !== null)
     if (withMode.length > 0) this.draw.addFeatures(withMode as never[])
