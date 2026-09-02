@@ -1,0 +1,83 @@
+{
+  "schema_version": "1.0",
+  "kind": "executable",
+  "id": "population-workforce-profile",
+  "name": "人口·就业画像",
+  "description": "以候选研究范围与常住数量（居住/工作）+ 常住画像（居住/工作）四份原始 TXT 为主输入：先按坐标契约把原始网格中心坐标按 GCJ-02 读入、执行标准 GCJ02→WGS84 换算（WGS84≈CGCS2000）落在真实地面，再按候选研究范围（EPSG:4326）做格心 within 裁剪，统一到 EPSG:32650 生成 100m 稳定网格，输出每格居住人口、就业人口与职住比，以及人口加权后的年龄/学历/收入/消费等结构条件分布（标注缺失比例）与青年/高学历/中高收入群体的相对集聚区域。人口总量一律标注为「202604 单月快照数据口径下的估算值 + 候选范围筛选后」，未经供应商授权不输出权威总量；画像属性是「网格汇总条件分布」而非个人调查。缺文件、字段、坐标、CRS 或有效样本时明确失败，不使用演示兜底。",
+  "scope": "builtin",
+  "version": "0.1.0",
+  "revision": 1,
+  "status": "validated",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "geopandas",
+      "numpy",
+      "pandas",
+      "pyproj",
+      "shapely"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "study_area_path": {
+        "type": "string",
+        "description": "研究范围文件；默认 docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
+      },
+      "home_count_path": {
+        "type": "string",
+        "description": "居住数量 TXT；默认 ../04-乐活大道GIS数据/00-原始数据/人口客流/研究范围人口数据全/常住分析/常住数量/居住数量.txt"
+      },
+      "work_count_path": {
+        "type": "string",
+        "description": "工作数量 TXT；默认 ../04-乐活大道GIS数据/00-原始数据/人口客流/研究范围人口数据全/常住分析/常住数量/工作数量.txt"
+      },
+      "home_profile_path": {
+        "type": "string",
+        "description": "居住画像 TXT；默认 ../04-乐活大道GIS数据/00-原始数据/人口客流/研究范围人口数据全/常住分析/常住画像/居住画像.txt"
+      },
+      "work_profile_path": {
+        "type": "string",
+        "description": "工作画像 TXT；默认 ../04-乐活大道GIS数据/00-原始数据/人口客流/研究范围人口数据全/常住分析/常住画像/工作画像.txt"
+      },
+      "study_area_crs": {
+        "type": "string",
+        "default": "EPSG:4326",
+        "description": "研究范围预期 CRS；必须与文件元数据一致"
+      },
+      "cell_size_m": {
+        "type": "integer",
+        "const": 100,
+        "default": 100,
+        "description": "固定 100m 稳定网格；其他值会失败"
+      },
+      "output_layer_id": {
+        "type": "string",
+        "description": "可选结果图层 id；默认 population_workforce_profile_100m"
+      }
+    },
+    "required": []
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["success", "summary", "layer_id", "stats", "evidence", "layers"]
+  },
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 0,
+    "last_run_at": null
+  },
+  "created_at": "2026-09-03T00:00:00",
+  "updated_at": "2026-09-03T00:00:00"
+}

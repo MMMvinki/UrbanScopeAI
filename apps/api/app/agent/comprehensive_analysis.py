@@ -35,8 +35,8 @@ ACTIVITY_SKILL = "activity-temporal-profile"
 COMMERCIAL_SKILL = "commercial-supply-profile"
 DIAGNOSIS_SKILL = "commercial-vitality"
 PUBLIC_SERVICE_SKILL = "public-service-profile"
+POPULATION_SKILL = "population-workforce-profile"
 COMPREHENSIVE_INTENT = "project-comprehensive-analysis"
-POPULATION_DEGRADED_INTENT = "population-profile-degraded"
 
 
 @dataclass(frozen=True)
@@ -76,6 +76,13 @@ MODULE_SPECS: dict[str, ModuleSpec] = {
         PUBLIC_SERVICE_SKILL,
         "L2",
         ("候选研究范围", "深圳市 POI 全量原始总表（含 bigType/midType/smallType 与 WGS-84 坐标字段）"),
+    ),
+    POPULATION_MODULE: ModuleSpec(
+        POPULATION_MODULE,
+        "人口·就业画像",
+        POPULATION_SKILL,
+        "L2",
+        ("候选研究范围", "常住数量（居住/工作）+ 常住画像（居住/工作）原始 TXT（GCJ-02 网格中心坐标）"),
     ),
 }
 
@@ -133,25 +140,23 @@ def route_analysis_request(question: str) -> AnalysisRoute | None:
         return AnalysisRoute(
             intent_id=COMPREHENSIVE_INTENT,
             route_rule="R-COMPREHENSIVE",
-            route_reason="命中项目级‘综合现状/全面分析/现有数据能做什么’表达，按活动、商业、综合诊断与公共服务四个板块检查并执行。",
+            route_reason="命中项目级‘综合现状/全面分析/现有数据能做什么’表达，按活动、商业、综合诊断、公共服务与人口·就业画像五个板块检查并执行。",
             requested_modules=(
-                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE,
+                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE,
             ),
             executable_modules=(
-                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE,
+                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE,
             ),
         )
 
-    # 当前没有人口属性 Skill；明确降级到活动时序，并把人口画像保留为 blocked。
+    # 人口·就业画像：有真实 Skill，按常住数量 + 画像口径执行（不降级）。
     if _contains_any(q, _POPULATION_TERMS):
-        reason = "缺少可验证的人口数量、年龄、学历、收入等人口属性数据；活动强度不能替代人口画像。"
         return AnalysisRoute(
-            intent_id=POPULATION_DEGRADED_INTENT,
-            route_rule="R-POPULATION-DEGRADE",
-            route_reason="命中人口画像表达；受规划语义边界约束，仅降级执行活动时序画像。",
-            requested_modules=(POPULATION_MODULE, ACTIVITY_MODULE),
-            executable_modules=(ACTIVITY_MODULE,),
-            initially_blocked={POPULATION_MODULE: reason},
+            intent_id=POPULATION_SKILL,
+            route_rule="R-POPULATION-PROFILE",
+            route_reason="命中人口画像/人口结构/常住就业语义，选择人口·就业画像（202604 常住数量+画像口径）。",
+            requested_modules=(POPULATION_MODULE,),
+            executable_modules=(POPULATION_MODULE,),
         )
 
     # 商业与活动同时出现，或明确提出昼夜商业/商业活力，进入二者的综合诊断。
@@ -200,8 +205,6 @@ def route_analysis_request(question: str) -> AnalysisRoute | None:
 def _route_from_intent(intent_id: str) -> AnalysisRoute | None:
     if intent_id == COMPREHENSIVE_INTENT:
         return route_analysis_request("根据现有数据做项目综合现状分析")
-    if intent_id == POPULATION_DEGRADED_INTENT:
-        return route_analysis_request("人口画像")
     if intent_id == ACTIVITY_SKILL:
         return route_analysis_request("活动时序")
     if intent_id == COMMERCIAL_SKILL:
@@ -210,6 +213,8 @@ def _route_from_intent(intent_id: str) -> AnalysisRoute | None:
         return route_analysis_request("商业与活动活力匹配")
     if intent_id == PUBLIC_SERVICE_SKILL:
         return route_analysis_request("分析公共服务设施资源分布")
+    if intent_id == POPULATION_SKILL:
+        return route_analysis_request("人口画像")
     return None
 
 
@@ -256,7 +261,7 @@ def _blocked_module(module_id: str, reason: str, *, stop_code: str = "STOP_NOT_R
         module_id=module_id,
         status="blocked",
         skill_id=spec.skill_id if spec else None,
-        achieved_level="L0" if module_id == POPULATION_MODULE else "L1",
+        achieved_level="L1",
         summary=reason,
         limitations=[reason],
         stop_code=stop_code,
@@ -313,7 +318,7 @@ def _result_group(route: AnalysisRoute, modules: list[AnalysisModuleResult]) -> 
         widgets.append(
             ResultWidget(
                 id=f"w-analysis-{index}",
-                title=MODULE_SPECS[module.module_id].label if module.module_id in MODULE_SPECS else "人口画像数据缺口",
+                title=MODULE_SPECS[module.module_id].label if module.module_id in MODULE_SPECS else module.module_id,
                 widget_type=WidgetType.map if module.output_layer else WidgetType.list,
                 value="已完成" if module.status == "completed" else "不可执行",
                 subtitle=f"{module.achieved_level} · {module.skill_id or '无可执行 Skill'}",
@@ -342,8 +347,8 @@ def _final_answer(route: AnalysisRoute, analysis: StructuredAnalysisResult) -> s
         run_ref = f"；run={module.run_id}" if module.run_id else ""
         layer_ref = f"；图层={module.output_layer}" if module.output_layer else ""
         lines.append(f"[{marker}] {module.module_id}{run_ref}{layer_ref}：{module.summary}")
-    lines.append("边界：活动强度不是人口数量或人口结构；商业点数量/密度不是营业额、经营质量或消费等级；商业与活动空间共现不代表因果；公共服务设施点位数只描述相对空间分布，不代表服务容量、可达性或短缺。")
-    lines.append("活动数据使用的 gcj02_to_wgs84 仍是候选坐标版本，尚待数据所有者权威确认。")
+    lines.append("边界：活动强度不是人口数量或人口结构；商业点数量/密度不是营业额、经营质量或消费等级；商业与活动空间共现不代表因果；公共服务设施点位数只描述相对空间分布，不代表服务容量、可达性或短缺；人口总数为 202604 单月快照口径的估算值且为候选范围筛选后，画像为网格汇总条件分布、非个人调查，未经供应商授权不输出权威总量。")
+    lines.append("人口网格中心坐标按 GCJ-02→WGS84 换算（已核验），活动数据的 gcj02_to_wgs84 仍是候选坐标版本；常住（202604）与客流/OD（2025 各日）日期口径不同，不横比。")
     return "\n".join(lines)
 
 
@@ -433,7 +438,7 @@ def execute_analysis_route(
         AnalysisReadinessItem(
             module_id=module.module_id,
             status="ready" if module.status == "completed" else "blocked",
-            required_data=list(MODULE_SPECS[module.module_id].required_data) if module.module_id in MODULE_SPECS else ["人口属性数据"],
+            required_data=list(MODULE_SPECS[module.module_id].required_data) if module.module_id in MODULE_SPECS else ["相关数据"],
             reason=("真实 Skill 校验通过并产出地图、统计和证据。" if module.status == "completed" else str(module.blocked_reason or module.summary)),
         )
         for module in modules

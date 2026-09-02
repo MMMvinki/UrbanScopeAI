@@ -19,6 +19,7 @@ from app.agent.comprehensive_analysis import (
     DIAGNOSIS_MODULE,
     DIAGNOSIS_SKILL,
     POPULATION_MODULE,
+    POPULATION_SKILL,
     PUBLIC_SERVICE_MODULE,
     PUBLIC_SERVICE_SKILL,
     execute_analysis_route,
@@ -66,20 +67,21 @@ overall_plan = plan_for("根据现有数据做一次项目全面现状分析")
 overall_skill_ids = [step.detail or "" for step in overall_plan.plan if step.tool == "execute_skill_script"]
 check("项目全面现状分析路由", overall_plan.intent_id == COMPREHENSIVE_INTENT)
 check(
-    "全面分析形成四个核心板块计划",
-    len(overall_skill_ids) == 4
-    and all(skill in " ".join(overall_skill_ids) for skill in (ACTIVITY_SKILL, COMMERCIAL_SKILL, DIAGNOSIS_SKILL, PUBLIC_SERVICE_SKILL)),
+    "全面分析形成五个核心板块计划",
+    len(overall_skill_ids) == 5
+    and all(skill in " ".join(overall_skill_ids) for skill in (ACTIVITY_SKILL, COMMERCIAL_SKILL, DIAGNOSIS_SKILL, PUBLIC_SERVICE_SKILL, POPULATION_SKILL)),
 )
 
 target_plan = plan_for("请根据当前已有数据，对项目各方面进行一次尽可能完整的现状分析。")
 check("目标综合分析原句确定性路由", target_plan.intent_id == COMPREHENSIVE_INTENT)
 
 population_plan = plan_for("请给这个片区做一份人口画像，看看年龄和收入结构")
-check("人口画像降级路由", population_plan.intent_id == "population-profile-degraded")
+check("人口画像直接路由", population_plan.intent_id == POPULATION_SKILL)
 check(
-    "人口画像明确阻断并降级活动时序",
-    any(step.status.value == "blocked" and "人口属性" in str(step.detail) for step in population_plan.plan)
-    and any(ACTIVITY_SKILL in str(step.detail) for step in population_plan.plan),
+    "人口画像形成真实 Skill 计划",
+    len(population_plan.plan) == 1
+    and POPULATION_SKILL in str(population_plan.plan[0].detail)
+    and population_plan.plan[0].tool == "execute_skill_script",
 )
 
 
@@ -110,8 +112,8 @@ def fake_success_runner(skill_id: str, params: dict[str, Any], *, ctx: Any = Non
 overall_route = route_analysis_request("根据现有数据做综合现状分析")
 assert overall_route is not None
 structured = execute_analysis_route(overall_route, run_skill=fake_success_runner).structured_analysis
-check("综合结果包含稳定顶层字段", structured is not None and structured.requested_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE])
-check("综合结果四个板块全部完成", structured is not None and structured.ready_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE])
+check("综合结果包含稳定顶层字段", structured is not None and structured.requested_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE])
+check("综合结果五个板块全部完成", structured is not None and structured.ready_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE])
 check(
     "每个板块含运行标识/层级/统计/证据/限制/图层",
     structured is not None
@@ -168,29 +170,29 @@ check(
 )
 
 
-# 3) 人口画像真实降级：活动 Skill 运行，人口板块保持 blocked。
-population_result = execute(request_from_plan("请做人群画像，说明年龄收入和昼夜特征"))
+# 3) 人口画像真实运行：人口·就业画像 Skill 运行，产出地图、统计与证据。
+population_result = execute(request_from_plan("请给这个片区做一份人口画像，看看年龄和收入结构"))
 population_analysis = population_result.structured_analysis
 check(
-    "人口画像只运行活动 Skill",
+    "人口画像运行真实 Skill",
     population_analysis is not None
-    and population_analysis.ready_modules == [ACTIVITY_MODULE]
-    and POPULATION_MODULE in population_analysis.blocked_modules,
+    and population_analysis.ready_modules == [POPULATION_MODULE]
+    and not population_analysis.blocked_modules,
 )
 check(
-    "人口降级保持语义边界",
-    "活动强度不是人口数量或人口结构" in str(population_result.final_answer)
-    and "人口属性数据" in str(population_result.final_answer),
+    "人口画像保持口径边界",
+    "估算" in str(population_result.final_answer)
+    and "网格汇总条件分布" in str(population_result.final_answer),
 )
 
 
-# 4) 真实综合运行：必须分别产出四个 Skill 的 run、地图、统计和证据。
+# 4) 真实综合运行：必须分别产出五个 Skill 的 run、地图、统计和证据。
 real_result = execute(request_from_plan("根据现有数据做一次项目全面现状分析"))
 real_analysis = real_result.structured_analysis
 check(
-    "真实综合分析四个板块完成",
+    "真实综合分析五个板块完成",
     real_analysis is not None
-    and real_analysis.ready_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE]
+    and real_analysis.ready_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE]
     and not real_analysis.blocked_modules,
 )
 check(
@@ -199,13 +201,14 @@ check(
     and all(module.run_id and module.output_layer and module.stats and module.evidence for module in real_analysis.modules),
 )
 check(
-    "综合结论包含三条规划语义红线和候选坐标措辞",
+    "综合结论包含规划语义红线、人口口径与候选坐标措辞",
     all(
         text in str(real_result.final_answer)
         for text in (
             "活动强度不是人口数量或人口结构",
             "商业点数量/密度不是营业额、经营质量或消费等级",
             "空间共现不代表因果",
+            "网格汇总条件分布",
             "gcj02_to_wgs84 仍是候选坐标版本",
         )
     ),

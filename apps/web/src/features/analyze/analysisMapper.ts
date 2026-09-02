@@ -95,8 +95,8 @@ const MODULE_META: Record<string, { label: string; lead: string }> = {
     lead: '教育、医疗、体育、便民与应急——公共服务设施资源画像',
   },
   population_profile: {
-    label: '人口画像',
-    lead: '人口总量与结构（当前缺少人口属性数据）',
+    label: '人口·就业画像',
+    lead: '居住与就业在哪里、结构与职住比——人口·就业画像',
   },
 }
 
@@ -152,6 +152,13 @@ const RICHNESS_COLORS: Record<string, string> = {
   4: '#0d9488',
 }
 
+/** 人口·就业画像：三个群体（居住口径）的相对集聚图例配色 */
+const POPULATION_GROUP_COLORS: Record<string, string> = {
+  youth: '#2563eb',
+  high_edu: '#0d9488',
+  mid_high_income: '#d97706',
+}
+
 /** 阻断板块的降级提示（静态口径，与《规划分析内容标准》一致） */
 const DEGRADE_HINTS: Record<string, string> = {
   activity_temporal: '缺少活动数据时，仍可单独做商业供给格局（若商业数据就绪）。',
@@ -161,7 +168,7 @@ const DEGRADE_HINTS: Record<string, string> = {
   public_service:
     '四类 POI 分片或类别字段缺失时公共服务板块不运行；其余已就绪的活动、商业与综合诊断板块不受影响。',
   population_profile:
-    '缺少人口属性数据，无法生成人口画像；本次仅显示活动时序画像等当前数据可支撑的板块。',
+    '缺少常住数量或常住画像数据时人口·就业画像不运行；其余已就绪的活动、商业、综合诊断与公共服务板块不受影响。',
 }
 
 /* ---------------- 数字格式化 ---------------- */
@@ -334,6 +341,59 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
     ]
     return list.filter((m): m is StatMetric => m != null)
   }
+  if (module.module_id === 'population_profile') {
+    const counts = obj(stats.counts)
+    const groups = obj(stats.groups)
+    const youth = obj(groups.youth)
+    const highEdu = obj(groups.high_edu)
+    const midHigh = obj(groups.mid_high_income)
+    const list = [
+      metric(
+        '居住人口',
+        num(counts.home_in_range_population) != null
+          ? formatInt(num(counts.home_in_range_population) as number)
+          : null,
+        '202604 估算 · 候选范围筛选后',
+      ),
+      metric(
+        '就业人口',
+        num(counts.work_in_range_population) != null
+          ? formatInt(num(counts.work_in_range_population) as number)
+          : null,
+        '202604 估算 · 候选范围筛选后',
+      ),
+      metric(
+        '职住比',
+        num(stats.jobs_resident_ratio) != null
+          ? formatNumber(num(stats.jobs_resident_ratio) as number)
+          : null,
+        '就业 ÷ 居住',
+      ),
+      metric('100m 网格', num(stats.grid_count) != null ? formatInt(num(stats.grid_count) as number) : null),
+      metric(
+        '青年（18-34）占比',
+        num(youth.proportion) != null
+          ? `${formatNumber((num(youth.proportion) as number) * 100)}%`
+          : null,
+        '居住人群人口加权',
+      ),
+      metric(
+        '高学历（本科及以上）',
+        num(highEdu.proportion) != null
+          ? `${formatNumber((num(highEdu.proportion) as number) * 100)}%`
+          : null,
+        '居住人群人口加权',
+      ),
+      metric(
+        '中高收入（4000+）',
+        num(midHigh.proportion) != null
+          ? `${formatNumber((num(midHigh.proportion) as number) * 100)}%`
+          : null,
+        '居住人群人口加权',
+      ),
+    ]
+    return list.filter((m): m is StatMetric => m != null)
+  }
   return []
 }
 
@@ -436,6 +496,27 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
         title: '类型丰富度',
         rows: richnessRows,
         note: '类型丰富度=一个 500m 格覆盖四大功能组中的几类',
+      },
+    ]
+  }
+  if (module.module_id === 'population_profile') {
+    const groups = obj(stats.groups)
+    const rows: LegendRow[] = (['youth', 'high_edu', 'mid_high_income'] as const).map((key) => {
+      const item = obj(groups[key])
+      return {
+        code: key,
+        label: str(item.label) || key,
+        color: POPULATION_GROUP_COLORS[key] ?? '#94a3b8',
+        cells: num(item.high_cells),
+        areaKm2: null,
+        points: null,
+      }
+    })
+    return [
+      {
+        title: '群体相对集聚格（高于正密度格中位数）',
+        rows,
+        note: '基于居住人群口径：每格群体人数 = 居住人数 × 该群体比例之和；相对集聚 = 高于正密度格中位数。占比为人口加权估算，非个人身份。',
       },
     ]
   }
@@ -572,7 +653,8 @@ function buildBoundarySection(analysis: StructuredAnalysisResult, index: number)
   const blocked = analysis.modules.filter((m) => m.status === 'blocked')
   const completedCount = analysis.modules.filter((m) => m.status === 'completed').length
   const fixed = [
-    '完整人口画像、人口总量与年龄/学历/收入等结构（缺人口属性数据）',
+    '人口权威总量与个人身份画像（本次仅输出 202604 估算的居住/就业数量与网格汇总条件分布；未经供应商授权不发布权威总量，也不把画像当个人身份）',
+    '常住（202604）与客流/OD（2025 各日）的横比（日期口径不同）；通勤方式/时间/距离与 OD 流向（后续 commuting-flow-profile 范畴）',
     '公共服务覆盖范围/可达性/服务容量与品质、15 分钟生活圈（本次仅做资源数量与分布盘点，不做覆盖、可达、容量或品质评价）',
     '设施公办民办属性与产权/运营主体判定（POI 类别字段无法证明，本次不做推断）',
     '交通可达性（缺站点、入口、路网与服务区参数）',
