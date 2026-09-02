@@ -595,6 +595,7 @@ class SkillStore:
         self._record_run_step(skill_id, run_id, output, ctx)
         self._bump_run(skill_id, op, success=success)
 
+        registered_layers = [r for r in registered if r is not None]
         return {
             "success": success,
             "skill_id": skill_id,
@@ -603,7 +604,12 @@ class SkillStore:
             "stdout_tail": (proc.stdout or "")[-4000:],
             "stderr_tail": (proc.stderr or "")[-4000:],
             "output": output,
-            "layers": [r for r in registered if r is not None],
+            "layers": registered_layers,
+            # 对齐普通 GIS 工具的产物契约，让 Agent 适配层能把 Skill 真正生成的
+            # 第一张图层纳入成果组，而不是只显示一段文字。
+            "output_layer_id": (
+                registered_layers[0]["layer_id"] if registered_layers else None
+            ),
             "plot_files": [p["path"] for p in plots],
         }
 
@@ -685,7 +691,8 @@ class SkillStore:
             source=LayerSource.generated,
             geometry=geometry,
             feature_count=int(layer.get("feature_count") or len(geojson.get("features", []))),
-            crs="EPSG:4490",
+            # Skill 输出必须显式声明真实 CRS；存量 skill 未声明时保留原默认。
+            crs=str(layer.get("crs") or "EPSG:4490"),
             fields=fields,
             description=layer.get("description"),
             generated_by="skill",
@@ -753,7 +760,9 @@ class SkillStore:
     def _bump_run(self, skill_id: str, op: SkillSpec, *, success: bool) -> None:
         """run 后更新 skill.json：run_count+1、last_run_at、draft 首次成功 → validated。"""
         loc = self._location(skill_id)
-        if loc is None:
+        if loc is None or loc[1]:
+            # builtin 在契约上是只读的；运行记录保存在 runs/，不得反向改写
+            # 版本化 skill.json，否则相同输入仅因 run_count/时间戳产生工作区漂移。
             return
         try:
             data = op.model_dump(mode="json")
