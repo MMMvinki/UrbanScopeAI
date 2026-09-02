@@ -6339,3 +6339,537 @@ button:disabled {
 .layer-panel__scroll::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
 }
+
+/* ============================================================
+   综合分析板块（AnalysisBoard / SectionCard / AnalysisLegend）
+   16:9 全屏单页，自上而下顺序阅读；复用项目颜色/卡片/按钮/字体令牌
+   ============================================================ */
+.analysis-board {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  overflow: hidden;
+}
+
+.analysis-board__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.analysis-board__title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.analysis-board__title > svg {
+  width: 26px;
+  height: 26px;
+  color: var(--info-text);
+}
+.analysis-board__title h1 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+  font-family: var(--font-display);
+}
+.analysis-board__subtitle {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* 顶部锚点导航 */
+.analysis-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.analysis-nav__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.analysis-nav__item:hover {
+  border-color: var(--info);
+  color: var(--info-text);
+  background: rgba(14, 165, 233, 0.06);
+}
+.analysis-nav__index {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--border-soft);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* 滚动主体 */
+.analysis-board__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px 48px;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* 空态 */
+.analysis-board__empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 24px;
+  text-align: center;
+}
+.analysis-board__empty-title {
+  font-size: 18px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  margin: 0;
+}
+.analysis-board__empty-desc {
+  max-width: 560px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+}
+
+/* 板块卡 */
+.analysis-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 20px 24px;
+  scroll-margin-top: 16px;
+}
+.analysis-card__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.analysis-card__index {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--border-soft);
+  color: var(--info-text);
+  font-size: 14px;
+  font-weight: 700;
+  font-family: var(--font-display);
+}
+.analysis-card__titles {
+  flex: 1;
+  min-width: 0;
+}
+.analysis-card__title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0;
+  font-family: var(--font-display);
+}
+.analysis-card__lead {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.analysis-card__badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.analysis-card__body {
+  margin-top: 16px;
+}
+
+/* 关键数字横排 */
+.analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin: 0 0 16px;
+}
+.analysis-metric {
+  background: var(--border-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.analysis-metric__value {
+  font-size: 22px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  color: var(--text);
+  line-height: 1.1;
+}
+.analysis-metric__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.analysis-metric__hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* 正文两栏：左结论/依据，右图例/漏斗 */
+.analysis-card__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 20px;
+  margin-top: 4px;
+}
+@media (max-width: 860px) {
+  .analysis-card__cols {
+    grid-template-columns: 1fr;
+  }
+}
+.analysis-card__conclusion {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text);
+  margin: 0 0 12px;
+}
+
+/* 依据（可折叠） */
+.analysis-evidence {
+  margin-top: 12px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.analysis-evidence summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  user-select: none;
+}
+.analysis-evidence summary:hover {
+  color: var(--info-text);
+}
+.analysis-evidence__list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.analysis-evidence__list li {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  padding-left: 14px;
+  position: relative;
+}
+.analysis-evidence__list li::before {
+  content: "\00b7";
+  position: absolute;
+  left: 4px;
+  color: var(--info-text);
+}
+
+/* 图例 */
+.analysis-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.analysis-legend__group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.analysis-legend__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  background: var(--border-soft);
+  border-bottom: 1px solid var(--border);
+}
+.analysis-legend__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.analysis-legend__table th,
+.analysis-legend__table td {
+  text-align: left;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.analysis-legend__table th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+.analysis-legend__table tbody tr:last-child td {
+  border-bottom: none;
+}
+.analysis-legend__num {
+  text-align: right !important;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.analysis-legend__swatch {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  vertical-align: middle;
+}
+.analysis-legend__note {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 8px 12px;
+  border-top: 1px dashed var(--border);
+}
+
+/* 数据漏斗 */
+.analysis-funnel {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+}
+.analysis-funnel__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+.analysis-funnel__steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.analysis-funnel__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.analysis-funnel__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.analysis-funnel__value {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+.analysis-funnel__arrow {
+  color: var(--text-muted);
+}
+
+/* 限制说明（固定可见，不折叠） */
+.analysis-limitations {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.analysis-limitations__label {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--warning-text);
+  margin-bottom: 8px;
+}
+.analysis-limitations__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.analysis-limitations__list li {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  padding-left: 16px;
+  position: relative;
+}
+.analysis-limitations__list li::before {
+  content: "!";
+  position: absolute;
+  left: 2px;
+  color: var(--warning-text);
+  font-weight: 700;
+}
+
+/* 计划板块：路由 / 就绪矩阵 */
+.analysis-plan__route {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 8px;
+  line-height: 1.6;
+}
+.analysis-plan__summary {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 14px;
+}
+.analysis-readiness {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.analysis-readiness__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  padding: 8px 12px;
+  background: var(--border-soft);
+  border-bottom: 1px solid var(--border);
+}
+.analysis-readiness__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.analysis-readiness__table th,
+.analysis-readiness__table td {
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  vertical-align: top;
+}
+.analysis-readiness__table th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.analysis-readiness__table tbody tr:last-child td {
+  border-bottom: none;
+}
+.analysis-readiness__data {
+  color: var(--text-secondary);
+}
+.analysis-readiness__reason {
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* 边界板块 */
+.analysis-boundary__summary {
+  font-size: 14px;
+  color: var(--text);
+  margin: 0 0 12px;
+}
+.analysis-boundary__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.analysis-boundary__list li {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  padding: 8px 12px;
+  background: var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+/* 阻断卡（不显示假数字/假地图） */
+.analysis-card__blocked {
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.05);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.analysis-card__blocked-reason {
+  font-size: 14px;
+  color: var(--error-text);
+  margin: 0 0 10px;
+  line-height: 1.6;
+}
+.analysis-card__blocked-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+.analysis-card__degrade {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.6;
+}
+.analysis-card__degrade-label {
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 卡片底部：运行编号 + 地图按钮 */
+.analysis-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  flex-wrap: wrap;
+}
+.analysis-card__run {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.analysis-card__run code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--border-soft);
+  padding: 2px 6px;
+  border-radius: 4px;
+}

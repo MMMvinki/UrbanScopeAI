@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { AppShell } from './components/AppShell'
 import { EvalAdminPage } from './features/eval/EvalAdminPage'
+import { AnalysisBoard } from './features/analyze/AnalysisBoard'
 import { AgentPanel } from './features/agent/AgentPanel'
 import { LayerPanel } from './features/layers/LayerPanel'
 import { ToolsPanel } from './features/tools/ToolsPanel'
@@ -33,6 +34,7 @@ export default function App() {
   const handleNav = (key: NavKey) => {
     if (key === 'agent') toggleAgent()
     else if (key === 'eval') setActiveNav('eval')
+    else if (key === 'analysis') setActiveNav('analysis')
     else if (key === activeNav) toggleLeftPanel()
     else setActiveNav(key)
   }
@@ -45,7 +47,7 @@ export default function App() {
     results: <ResultsPanel />,
     // activeNav 的 'agent' 已被 handleNav 路由走（不进入 setActiveNav），'eval' 在下方整页替换分支提前 return，
     // 两者都排除（否则对象查找把 'eval' 当 key，TS 报 2339）
-  }[activeNav as Exclude<NavKey, 'agent' | 'eval'>]
+  }[activeNav as Exclude<NavKey, 'agent' | 'eval' | 'analysis'>]
 
   if (activeNav === 'eval') {
     // 独立评测管理后台：整页替换 AppShell（与地图工作区分离），自带返回入口
@@ -56,6 +58,11 @@ export default function App() {
         <UploadModal />
       </>
     )
+  }
+
+  if (activeNav === 'analysis') {
+    // 综合分析板块整页：替换 AppShell，自上而下顺序阅读，自带「返回地图」入口
+    return <AnalysisBoard onExit={() => setActiveNav('data')} />
   }
 
   return (

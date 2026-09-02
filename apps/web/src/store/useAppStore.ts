@@ -42,6 +42,8 @@ import {
 } from '../features/map/mapLayers'
 import type { ChatTurn } from '../features/agent/agentTypes'
 import { nextBlockId } from '../features/agent/agentTypes'
+import type { StructuredAnalysisResult } from '../features/analyze/analysisTypes'
+import { parseStructuredAnalysis } from '../features/analyze/analysisMapper'
 
 /** 会话（Codex 式）基础设施：localStorage 多会话 + 每会话独立消息。
  *
@@ -590,6 +592,12 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
       return msg
     }
     case 'execution': {
+      // 受控综合分析入口：execution 事件全量下发 ExecutionResult，其中含 structured_analysis。
+      // 解析成功才覆盖「最近一次综合分析」；旧分析路径该字段为 null，保持上一次结果不被清空。
+      const structured = parseStructuredAnalysis(
+        (event.data as { structured_analysis?: unknown }).structured_analysis,
+      )
+      if (structured) side.lastComprehensiveAnalysis = structured
       const group = toResultGroup((event.data.result_group as Parameters<typeof toResultGroup>[0]) ?? null)
       if (group) {
         // 成果组与 run 归属：信封级 run_id 打标，供成果页「运行记录」与对话 chip 跳转
@@ -738,7 +746,7 @@ async function runExecute(
   }
 }
 
-export type NavKey = 'project' | 'agent' | 'data' | 'tools' | 'skills' | 'results' | 'eval'
+export type NavKey = 'project' | 'agent' | 'data' | 'tools' | 'skills' | 'results' | 'eval' | 'analysis'
 
 // 本地演示图层已随北京示例数据移除（2026-08-17）：地图图层全部由后端 /layers 下发。
 // 后端未启动时地图保持空（诚实呈现，绝不显示编造的演示假数据）。
@@ -789,6 +797,8 @@ interface AppState {
   tools: ToolSpec[]
   /** 一次分析的成果组（成果页，左槽面板） */
   resultGroups: ResultGroup[]
+  /** 最近一次综合分析的结构化结果（后端 structured_analysis）；板面「分析」页消费，非综合分析保持旧值 */
+  lastComprehensiveAnalysis: StructuredAnalysisResult | null
   /** 成果面板高亮定位的目标分组 id（点击对话「成果产物」chip 写入，面板滚动定位后自动清除） */
   highlightGroupId: string | null
   /** 图层本地样式（按 layerId，session 级；Sprint 2 随 P3 升级后端持久化） */
@@ -938,6 +948,7 @@ export const useAppStore = create<AppState>((set) => ({
   allSkills: [],
   tools: [],
   resultGroups: [],
+  lastComprehensiveAnalysis: null,
   highlightGroupId: null,
   layerStyles: {},
   geojsonTick: 0,
