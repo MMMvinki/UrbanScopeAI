@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0",
+  "kind": "executable",
+  "id": "activity-temporal-profile",
+  "name": "活动时序画像",
+  "description": "使用固定候选研究范围和 gcj02_to_wgs84 活动候选 CSV，在 EPSG:32650 中生成全局锚定 100m 网格，重算日间、夜间活动值与中位数阈值，划分昼高夜低、昼低夜高、全天较高、持续较低和无数据五类，输出可上图的真实结果、统计和证据。缺文件、字段、CRS 或有效样本时明确失败，不使用演示兜底。",
+  "scope": "builtin",
+  "version": "0.1.0",
+  "revision": 1,
+  "status": "validated",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "geopandas",
+      "numpy",
+      "pandas",
+      "pyproj",
+      "shapely"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "study_area_path": {
+        "type": "string",
+        "description": "研究范围文件；默认 docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
+      },
+      "vitality_path": {
+        "type": "string",
+        "description": "活动候选 CSV；默认 gcj02_to_wgs84 版本"
+      },
+      "study_area_crs": {
+        "type": "string",
+        "default": "EPSG:4326",
+        "description": "研究范围预期 CRS；必须与文件元数据一致"
+      },
+      "vitality_crs": {
+        "type": "string",
+        "default": "EPSG:4326",
+        "description": "活动 lon/lat 的显式 CRS 假设；当前仅允许 EPSG:4326"
+      },
+      "time_scope": {
+        "type": "string",
+        "enum": ["all", "wd", "we"],
+        "default": "all",
+        "description": "all=全样本、wd=工作日、we=周末；昼夜字段来自同一组"
+      },
+      "cell_size_m": {
+        "type": "integer",
+        "const": 100,
+        "default": 100,
+        "description": "固定 100m 稳定网格；其他值会失败"
+      },
+      "output_layer_id": {
+        "type": "string",
+        "description": "可选结果图层 id；默认 activity_temporal_profile_100m_<time_scope>"
+      }
+    },
+    "required": []
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["success", "summary", "layer_id", "stats", "evidence", "layers"]
+  },
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 0,
+    "last_run_at": null
+  },
+  "created_at": "2026-09-02T00:00:00",
+  "updated_at": "2026-09-02T00:00:00"
+}

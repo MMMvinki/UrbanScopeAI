@@ -26,6 +26,7 @@ apps/api/app/platform_data/
 # 技能运行产物 / 服务器运行日志（本地，不上传）
 apps/api/app/skills/builtin/kernel-density/runs/
 apps/api/app/skills/builtin/commercial-vitality/runs/
+apps/api/app/skills/builtin/activity-temporal-profile/runs/
 apps/api/restart_logs/
 
 # 服务器运行日志（本地，不上传）
