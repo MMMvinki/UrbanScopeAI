@@ -8,6 +8,7 @@ LLM 工具循环执行真计算。LLM 不可用或执行失败时**不降级到�
 
 from typing import Any
 
+from app.agent.comprehensive_analysis import try_execute_controlled_analysis
 from app.agent.llm_executor import _try_style_request, try_execute as llm_try_execute
 from app.agent.reflection import reflect
 from app.models.agent import ExecuteRequest, TraceEvent
@@ -105,6 +106,12 @@ def execute(
             reflection="闲聊类回复，未触发空间分析。",
             final_answer=reply,
         )
+
+    # 已验证的活动/商业/综合三能力走受控编排器：直接运行真实 Skill，
+    # 不依赖模型自由选链，也不占用或放宽通用 Agent 的工具调用额度。
+    controlled_result = try_execute_controlled_analysis(request, ctx=ctx, emit=emit)
+    if controlled_result is not None:
+        return controlled_result
 
     # 门3 护栏：分析对象数据缺失且未获用户授权 → 停下给选择，不静默执行。
     # 只对 unmet_targets（解析不到数据的分析对象）生效；known 标签（乱停乱放等）

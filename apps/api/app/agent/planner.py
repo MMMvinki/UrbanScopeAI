@@ -7,6 +7,7 @@
    想要的（如「学校好远」会被猜成覆盖率分析），宁可坦白失败也不产出偏离意图的分析。
 """
 
+from app.agent.comprehensive_analysis import plan_controlled_analysis
 from app.agent.llm_planner import try_plan
 from app.agent.patterns import DEFAULT_DISTANCE
 from app.models.agent import PlanResult
@@ -88,6 +89,11 @@ def plan_for(
     history: 多轮对话历史（[{role, content}]），供 LLM 参考上下文。
     conversation_id: 会话 id，透传给 LLM Planner 注入多轮记忆。
     """
+    # 三项已验证核心能力使用可解释的确定性路由；包括“能做什么”综合入口，
+    # 因此必须放在普通闲聊守卫和自由模型规划之前。
+    controlled = plan_controlled_analysis(question)
+    if controlled is not None:
+        return controlled
     chat = _chat_reply_for(question)
     if chat is not None:
         return chat
