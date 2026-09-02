@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "kind": "executable",
+  "id": "public-service-profile",
+  "name": "公共服务设施资源画像",
+  "description": "以深圳市 2024 POI 全量原始总表为主输入，经四域大类筛选（公共设施/科教文化服务/医疗保健服务/体育休闲服务）→候选研究范围筛选→大中小类纳入/排除→EPSG:32650 中 500m 稳定网格统计，归入教育文化、医疗健康、体育活动、便民与应急四大功能组，输出每格纳入总数、四类数量、类型丰富度与无设施/资源相对较少/相对较多分型。同时保留原始 POI 数量与规划纳入数量；不推断公办民办；资源相对较少仅为当前 POI 的相对空间现象。证据含原始文件路径/哈希/使用字段/分类规则/原始记录数/范围内记录数/纳入与排除数量；01-加工数据的分类 Shapefile 仅作可选交叉核对；不使用 PPT/PDF 数字校准。缺文件、字段、CRS、有效样本或分类规则无法执行时明确失败，不使用演示兜底。",
+  "scope": "builtin",
+  "version": "0.1.0",
+  "revision": 2,
+  "status": "validated",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "geopandas",
+      "numpy",
+      "pandas",
+      "pyproj",
+      "shapely"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "study_area_path": {
+        "type": "string",
+        "description": "研究范围文件；默认 docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
+      },
+      "poi_path": {
+        "type": "string",
+        "description": "深圳市 POI 全量原始总表（主输入）；默认 ../04-乐活大道GIS数据/00-原始数据/POI全量/深圳市2024POI.csv"
+      },
+      "poi_encoding": {
+        "type": "string",
+        "default": "utf-8-sig",
+        "description": "主表文本编码"
+      },
+      "study_area_crs": {
+        "type": "string",
+        "default": "EPSG:4326",
+        "description": "研究范围预期 CRS；必须与文件元数据一致"
+      },
+      "cell_size_m": {
+        "type": "integer",
+        "const": 500,
+        "default": 500,
+        "description": "固定 500m 稳定网格；其他值会失败"
+      },
+      "crosscheck_dir": {
+        "type": "string",
+        "description": "可选：01-加工数据/POI分类切片/shp 目录，仅用于交叉核对派生数量（不参与主计算）"
+      },
+      "output_layer_id": {
+        "type": "string",
+        "description": "可选结果图层 id；默认 public_service_profile_500m"
+      }
+    },
+    "required": []
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["success", "summary", "layer_id", "stats", "evidence", "layers"]
+  },
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 0,
+    "last_run_at": null
+  },
+  "created_at": "2026-09-02T00:00:00",
+  "updated_at": "2026-09-02T00:00:00"
+}

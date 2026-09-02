@@ -28,11 +28,13 @@ from app.tools.context import ToolContext
 ACTIVITY_MODULE = "activity_temporal"
 COMMERCIAL_MODULE = "commercial_supply"
 DIAGNOSIS_MODULE = "commercial_vitality"
+PUBLIC_SERVICE_MODULE = "public_service"
 POPULATION_MODULE = "population_profile"
 
 ACTIVITY_SKILL = "activity-temporal-profile"
 COMMERCIAL_SKILL = "commercial-supply-profile"
 DIAGNOSIS_SKILL = "commercial-vitality"
+PUBLIC_SERVICE_SKILL = "public-service-profile"
 COMPREHENSIVE_INTENT = "project-comprehensive-analysis"
 POPULATION_DEGRADED_INTENT = "population-profile-degraded"
 
@@ -68,6 +70,13 @@ MODULE_SPECS: dict[str, ModuleSpec] = {
         "L3",
         ("候选研究范围", "商业点数据", "含可比时段字段的活动数据"),
     ),
+    PUBLIC_SERVICE_MODULE: ModuleSpec(
+        PUBLIC_SERVICE_MODULE,
+        "公共服务设施资源画像",
+        PUBLIC_SERVICE_SKILL,
+        "L2",
+        ("候选研究范围", "深圳市 POI 全量原始总表（含 bigType/midType/smallType 与 WGS-84 坐标字段）"),
+    ),
 }
 
 
@@ -94,8 +103,13 @@ _POPULATION_TERMS = (
     "人口画像", "人口结构", "常住人口", "就业人口", "年龄画像", "学历画像", "收入画像", "人群画像",
 )
 _COMPREHENSIVE_TERMS = (
-    "综合现状", "全面现状", "项目综合", "项目全面", "整体分析", "全部现状", "现有数据能做什么",
+    "综合现状", "全面现状", "项目综合", "项目全面", "整体分析", "全部现状", "现状分析",
+    "项目现状", "现有数据能做什么",
     "当前数据能做什么", "能做什么", "请根据当前已有数据，对项目各方面进行一次尽可能完整的现状分析。",
+)
+_PUBLIC_SERVICE_TERMS = (
+    "公共服务", "公共设施", "科教文化", "教育设施", "医疗设施", "体育设施",
+    "便民设施", "应急设施", "教育", "医疗", "体育", "便民", "应急",
 )
 
 
@@ -119,9 +133,13 @@ def route_analysis_request(question: str) -> AnalysisRoute | None:
         return AnalysisRoute(
             intent_id=COMPREHENSIVE_INTENT,
             route_rule="R-COMPREHENSIVE",
-            route_reason="命中项目级‘综合现状/全面分析/现有数据能做什么’表达，按三个核心板块检查并执行。",
-            requested_modules=(ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE),
-            executable_modules=(ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE),
+            route_reason="命中项目级‘综合现状/全面分析/现有数据能做什么’表达，按活动、商业、综合诊断与公共服务四个板块检查并执行。",
+            requested_modules=(
+                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE,
+            ),
+            executable_modules=(
+                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE,
+            ),
         )
 
     # 当前没有人口属性 Skill；明确降级到活动时序，并把人口画像保留为 blocked。
@@ -146,6 +164,17 @@ def route_analysis_request(question: str) -> AnalysisRoute | None:
             route_reason="同时命中商业与活动/昼夜语义，选择商业供给 × 昼夜活力综合诊断。",
             requested_modules=(DIAGNOSIS_MODULE,),
             executable_modules=(DIAGNOSIS_MODULE,),
+        )
+
+    # 用户明确提及公共服务/公共设施/教育/医疗/体育/便民/应急语义 → 公共服务设施资源画像。
+    # 放在纯商业、纯活动单板块规则之前，确保“教育、医疗、体育与便民设施分布”不会被截去。
+    if _contains_any(q, _PUBLIC_SERVICE_TERMS):
+        return AnalysisRoute(
+            intent_id=PUBLIC_SERVICE_SKILL,
+            route_rule="R-PUBLIC-SERVICE",
+            route_reason="命中公共服务/公共设施/教育/医疗/体育/便民语义，选择公共服务设施资源画像。",
+            requested_modules=(PUBLIC_SERVICE_MODULE,),
+            executable_modules=(PUBLIC_SERVICE_MODULE,),
         )
 
     if has_commercial:
@@ -179,6 +208,8 @@ def _route_from_intent(intent_id: str) -> AnalysisRoute | None:
         return route_analysis_request("商业供给")
     if intent_id == DIAGNOSIS_SKILL:
         return route_analysis_request("商业与活动活力匹配")
+    if intent_id == PUBLIC_SERVICE_SKILL:
+        return route_analysis_request("分析公共服务设施资源分布")
     return None
 
 
@@ -311,7 +342,7 @@ def _final_answer(route: AnalysisRoute, analysis: StructuredAnalysisResult) -> s
         run_ref = f"；run={module.run_id}" if module.run_id else ""
         layer_ref = f"；图层={module.output_layer}" if module.output_layer else ""
         lines.append(f"[{marker}] {module.module_id}{run_ref}{layer_ref}：{module.summary}")
-    lines.append("边界：活动强度不是人口数量或人口结构；商业点数量/密度不是营业额、经营质量或消费等级；商业与活动空间共现不代表因果。")
+    lines.append("边界：活动强度不是人口数量或人口结构；商业点数量/密度不是营业额、经营质量或消费等级；商业与活动空间共现不代表因果；公共服务设施点位数只描述相对空间分布，不代表服务容量、可达性或短缺。")
     lines.append("活动数据使用的 gcj02_to_wgs84 仍是候选坐标版本，尚待数据所有者权威确认。")
     return "\n".join(lines)
 

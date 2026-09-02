@@ -90,6 +90,10 @@ const MODULE_META: Record<string, { label: string; lead: string }> = {
     label: '商业供给 × 昼夜活力综合诊断',
     lead: '供给是否跟着活动走——商业供给与昼夜活力综合诊断',
   },
+  public_service: {
+    label: '公共服务设施资源画像',
+    lead: '教育、医疗、体育、便民与应急——公共服务设施资源画像',
+  },
   population_profile: {
     label: '人口画像',
     lead: '人口总量与结构（当前缺少人口属性数据）',
@@ -133,12 +137,29 @@ const SUPPLY_COLORS: Record<string, string> = {
   low_supply: '#94a3b8',
 }
 
+/** 公共服务设施：资源相对分布三类颜色（与地图上的分类图例按同一相对口径描述） */
+const FACILITY_CLASS_COLORS: Record<string, string> = {
+  high: '#0d9488',
+  low: '#f59e0b',
+  none: '#cbd5e1',
+}
+
+const RICHNESS_COLORS: Record<string, string> = {
+  0: '#e2e8f0',
+  1: '#a5b4fc',
+  2: '#6366f1',
+  3: '#0ea5e9',
+  4: '#0d9488',
+}
+
 /** 阻断板块的降级提示（静态口径，与《规划分析内容标准》一致） */
 const DEGRADE_HINTS: Record<string, string> = {
   activity_temporal: '缺少活动数据时，仍可单独做商业供给格局（若商业数据就绪）。',
   commercial_supply: '缺少商业数据时，仍可单独做活动时序画像（若活动数据就绪）。',
   commercial_vitality:
     '综合诊断依赖活动与商业两个前置板块；任一缺失则无法交叉，可分别查看活动时序与商业供给的单项结果。',
+  public_service:
+    '四类 POI 分片或类别字段缺失时公共服务板块不运行；其余已就绪的活动、商业与综合诊断板块不受影响。',
   population_profile:
     '缺少人口属性数据，无法生成人口画像；本次仅显示活动时序画像等当前数据可支撑的板块。',
 }
@@ -294,6 +315,25 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
     ]
     return list.filter((m): m is StatMetric => m != null)
   }
+  if (module.module_id === 'public_service') {
+    const counts = obj(stats.counts)
+    const groups = obj(stats.groups)
+    const edu = obj(groups.education_culture)
+    const med = obj(groups.medical_health)
+    const sport = obj(groups.sports)
+    const convenience = obj(groups.convenience_emergency)
+    const list = [
+      metric('候选范围内点', num(counts.inside_study) != null ? formatInt(num(counts.inside_study) as number) : null, '四域大类落在研究范围内的点'),
+      metric('规划分析纳入', num(counts.included) != null ? formatInt(num(counts.included) as number) : null, '按类别纳入清单归入四大功能组'),
+      metric('本次排除', num(counts.excluded) != null ? formatInt(num(counts.excluded) as number) : null, '明确排除或无法判定类别的点'),
+      metric('教育文化', num(edu.count) != null ? formatInt(num(edu.count) as number) : null),
+      metric('医疗健康', num(med.count) != null ? formatInt(num(med.count) as number) : null),
+      metric('体育活动', num(sport.count) != null ? formatInt(num(sport.count) as number) : null),
+      metric('便民与应急', num(convenience.count) != null ? formatInt(num(convenience.count) as number) : null),
+      metric('500m 网格', num(stats.grid_count) != null ? formatInt(num(stats.grid_count) as number) : null),
+    ]
+    return list.filter((m): m is StatMetric => m != null)
+  }
   return []
 }
 
@@ -350,6 +390,55 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
       { title: '夜间 商业供给 × 活力', rows: quadrantRows(stats, 'supply_night_quadrants') },
     ]
   }
+  if (module.module_id === 'public_service') {
+    const cellClasses = obj(stats.cell_classes)
+    const grids = obj(stats.grids)
+    const classRows = (['none', 'low', 'high'] as const).map((key) => {
+      const item = obj(cellClasses[key])
+      return {
+        code: key,
+        label: str(item.label) || key,
+        color: FACILITY_CLASS_COLORS[key],
+        cells: num(item.grid_count),
+        areaKm2: num(item.area_km2),
+        points: null,
+      }
+    })
+    const richness = Array.isArray(stats.type_richness) ? stats.type_richness : []
+    const richnessRows = richness
+      .filter((r) => {
+        const n = num(obj(r).types)
+        return n != null && n >= 1 && n <= 4
+      })
+      .sort((a, b) => (num(obj(a).types) ?? 0) - (num(obj(b).types) ?? 0))
+      .map((r) => {
+        const item = obj(r)
+        const types = num(item.types) ?? 0
+        return {
+          code: `rich_${types}`,
+          label: `同时覆盖 ${types} 类`,
+          color: RICHNESS_COLORS[String(types)] ?? '#94a3b8',
+          cells: num(item.grid_count),
+          areaKm2: num(item.area_km2),
+          points: null,
+        }
+      })
+    const median = num(grids.relative_median)
+    return [
+      {
+        title: '500m 格资源相对分布',
+        rows: classRows,
+        note: median != null
+          ? `无设施格=设施数为 0；资源相对较多=设施数高于有设施格数量的中位数 ${median}；资源相对较少=有设施但不高于该中位数`
+          : '无设施格与资源相对较多/较少按有设施格数量的中位数划分',
+      },
+      {
+        title: '类型丰富度',
+        rows: richnessRows,
+        note: '类型丰富度=一个 500m 格覆盖四大功能组中的几类',
+      },
+    ]
+  }
   return []
 }
 
@@ -373,6 +462,19 @@ function buildFunnel(module: AnalysisModuleResult): FunnelStep[] | undefined {
       { label: 'isdelete=0', value: num(inputs.commercial_isdelete_0_records) },
       { label: '落入研究范围', value: num(inputs.commercial_points_in_boundary) },
       { label: '最终入格', value: num(inputs.commercial_points_aggregated) ?? total },
+    ]
+    return steps.every((s) => s.value != null)
+      ? (steps as FunnelStep[])
+      : undefined
+  }
+  if (module.module_id === 'public_service') {
+    const c = obj(module.stats.counts)
+    const steps = [
+      { label: '全量原始点', value: num(c.source_records) },
+      { label: '四域大类', value: num(c.domain_source_records) },
+      { label: '候选范围内', value: num(c.inside_study) },
+      { label: '规划分析纳入', value: num(c.included) },
+      { label: '入 500m 稳定格', value: num(c.assigned_to_grid) },
     ]
     return steps.every((s) => s.value != null)
       ? (steps as FunnelStep[])
@@ -468,12 +570,14 @@ function buildModuleSection(module: AnalysisModuleResult, index: number): Analys
 /** 当前不能分析的板块：阻断模块（若有）+ 固定能力边界清单 */
 function buildBoundarySection(analysis: StructuredAnalysisResult, index: number): AnalysisSection {
   const blocked = analysis.modules.filter((m) => m.status === 'blocked')
+  const completedCount = analysis.modules.filter((m) => m.status === 'completed').length
   const fixed = [
     '完整人口画像、人口总量与年龄/学历/收入等结构（缺人口属性数据）',
-    '公共设施覆盖与容量、15 分钟生活圈、品质评分（缺设施容量/居民需求/可达性数据）',
+    '公共服务覆盖范围/可达性/服务容量与品质、15 分钟生活圈（本次仅做资源数量与分布盘点，不做覆盖、可达、容量或品质评价）',
+    '设施公办民办属性与产权/运营主体判定（POI 类别字段无法证明，本次不做推断）',
     '交通可达性（缺站点、入口、路网与服务区参数）',
     '商业与活动的因果关系、补建优先级、投资排序与效果预测（现有数据只能说明空间共现）',
-    '土地、公共空间、产业与更新板块（不以三项现有能力替代）',
+    '土地、公共空间、产业与更新板块（不以现有能力替代）',
     '活动数据使用的 gcj02_to_wgs84 仍是候选坐标版本，尚未获数据所有者权威确认',
   ]
   const items = [
@@ -490,7 +594,7 @@ function buildBoundarySection(analysis: StructuredAnalysisResult, index: number)
     lead: '以下内容因数据或口径未锁定，本次未分析，也未冒充',
     summary: blocked.length
       ? '存在因缺数据被阻断的板块；下列清单同时列出平台当前不具备的能力边界。'
-      : '本次三个核心板块均已运行；下列是平台当前不具备的能力边界。',
+      : `本次共有 ${completedCount} 个板块完成运行；下列是平台当前不具备的能力边界。`,
     metrics: [{ label: '阻断板块', value: String(analysis.blocked_modules.length) }],
     boundaryItems: items,
   }
