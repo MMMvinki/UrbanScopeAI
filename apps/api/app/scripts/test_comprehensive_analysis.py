@@ -69,6 +69,9 @@ check(
     and all(skill in " ".join(overall_skill_ids) for skill in (ACTIVITY_SKILL, COMMERCIAL_SKILL, DIAGNOSIS_SKILL)),
 )
 
+target_plan = plan_for("请根据当前已有数据，对项目各方面进行一次尽可能完整的现状分析。")
+check("目标综合分析原句确定性路由", target_plan.intent_id == COMPREHENSIVE_INTENT)
+
 population_plan = plan_for("请给这个片区做一份人口画像，看看年龄和收入结构")
 check("人口画像降级路由", population_plan.intent_id == "population-profile-degraded")
 check(
