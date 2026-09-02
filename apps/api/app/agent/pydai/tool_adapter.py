@@ -14,6 +14,7 @@ set_current_context），绝不能绕过。
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from pydantic_ai import RunContext
@@ -30,7 +31,12 @@ class _RunAborted(Exception):
     """run 已取消（客户端断连 / 服务停止）：工具侧抛出，交由 _pa_run 捕获。"""
 
 
-def _make_wrapper(name: str) -> Callable[..., Any]:
+def _make_wrapper(
+    name: str,
+    *,
+    allowed_skill_ids: set[str] | None = None,
+    stop_repeats: bool = False,
+) -> Callable[..., Any]:
     """按工具名闭包出 PydanticAI 包装函数（异步、takes_ctx=True、**kwargs）。
 
     PydanticAI 校验模型参数（对照 json_schema）后以 kwargs 调用；多传的额外参数
@@ -46,6 +52,33 @@ def _make_wrapper(name: str) -> Callable[..., Any]:
                 token.cancel()
             raise _RunAborted("run 已取消（客户端断连）")
         emit = deps.event_emitter
+        # 受控主场景只允许读取/执行指定 Skill，防止模型把固定分析链改走
+        # 通用工具或另一个可执行 Skill。
+        if allowed_skill_ids is not None and name in {"get_skill", "execute_skill_script"}:
+            requested_skill = str(kwargs.get("skill_id") or "").strip()
+            if requested_skill not in allowed_skill_ids:
+                result = ToolResult(
+                    success=False,
+                    output={},
+                    message=f"受控分析路径不允许调用 skill：{requested_skill or '（空）'}",
+                )
+                deps.meta.setdefault("_pa_calls", []).append((name, kwargs, result))
+                return result.model_dump(mode="json")
+        if stop_repeats:
+            try:
+                fingerprint = f"{name}:{json.dumps(kwargs, ensure_ascii=False, sort_keys=True, default=str)}"
+            except (TypeError, ValueError):
+                fingerprint = f"{name}:{kwargs!r}"
+            seen = deps.meta.setdefault("_pa_controlled_fingerprints", set())
+            if fingerprint in seen:
+                result = ToolResult(
+                    success=False,
+                    output={},
+                    message=f"已停止同参数重复调用：{name}",
+                )
+                deps.meta.setdefault("_pa_calls", []).append((name, kwargs, result))
+                return result.model_dump(mode="json")
+            seen.add(fingerprint)
         # ② TOOL_START
         if emit is not None:
             emit.emit(EventType.TOOL_START, {"tool": name, "args": kwargs})
@@ -99,27 +132,41 @@ def _make_wrapper(name: str) -> Callable[..., Any]:
     return _wrapped
 
 
-def build_tools() -> list[Tool]:
+def build_tools(
+    *,
+    allowed_names: set[str] | None = None,
+    allowed_skill_ids: set[str] | None = None,
+    stop_repeats: bool = False,
+) -> list[Tool]:
     """构建 PydanticAI 工具集：本地注册表（含 skill）+ gis-mcp（动态）。
 
     每 run 现构（MCP 会话运行中可变；工具参数以当前注册表为唯一事实源）。
     """
-    from app.mcp import get_gis_mcp_bridge
     from app.tools.registry import TOOLS
 
     tools: list[Tool] = []
     for tool in TOOLS:
         if tool.status.value != "ready" or not tool.json_schema:
             continue
+        if allowed_names is not None and tool.name not in allowed_names:
+            continue
         tools.append(
             Tool.from_schema(
-                _make_wrapper(tool.name),
+                _make_wrapper(
+                    tool.name,
+                    allowed_skill_ids=allowed_skill_ids,
+                    stop_repeats=stop_repeats,
+                ),
                 name=tool.name,
                 description=tool.description,
                 json_schema=tool.json_schema,
                 takes_ctx=True,
             )
         )
+    if allowed_names is not None:
+        return tools
+    from app.mcp import get_gis_mcp_bridge
+
     bridge = get_gis_mcp_bridge()
     if bridge is not None and bridge.is_ready():
         for schema in bridge.schema_list():

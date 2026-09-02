@@ -14,6 +14,19 @@ if str(API_ROOT) not in sys.path:
     sys.path.insert(0, str(API_ROOT))
 
 from app.data_registry import DATA_REGISTRY  # noqa: E402
+from app.models.agent import ExecuteRequest, PlanStep  # noqa: E402
+from app.models.tool import ToolResult  # noqa: E402
+from app.agent.pydai.executor_agent import (  # noqa: E402
+    _CONTROLLED_REQUEST_LIMIT,
+    _CONTROLLED_TIMEOUT_SECONDS,
+    _CONTROLLED_TOOL_CALLS_LIMIT,
+    _controlled_contract_ok,
+    _controlled_system_prompt,
+    _controlled_user_prompt,
+    _finalize_generated_layers,
+    _is_controlled_commercial_vitality,
+)
+from app.agent.pydai.tool_adapter import build_tools  # noqa: E402
 from app.skills.store import STORE  # noqa: E402
 
 
@@ -77,6 +90,51 @@ validation = STORE.validate("commercial-vitality")
 check("Skill 静态校验", not validation.errors and validation.syntax_ok and validation.protocol_ok, str(validation.errors))
 source_text = MAIN_PATH.read_text(encoding="utf-8")
 check("主场景不引用 stable_rate", "stable_rate" not in source_text)
+
+# 受控 Agent 路径：只开放两件工具，带请求/调用/时间预算，文字回答不算成功。
+controlled_request = ExecuteRequest(
+    intent_id="commercial-vitality",
+    question="分析商业供给与昼夜活力",
+    plan=[PlanStep(step_id="s1", label="执行", tool="execute_skill_script", detail="commercial-vitality")],
+)
+check("主场景请求可识别", _is_controlled_commercial_vitality(controlled_request))
+controlled_tools = build_tools(
+    allowed_names={"get_skill", "execute_skill_script"},
+    allowed_skill_ids={"commercial-vitality"},
+    stop_repeats=True,
+)
+check("主场景工具白名单", {tool.name for tool in controlled_tools} == {"get_skill", "execute_skill_script"})
+check(
+    "主场景运行预算",
+    (_CONTROLLED_REQUEST_LIMIT, _CONTROLLED_TOOL_CALLS_LIMIT, _CONTROLLED_TIMEOUT_SECONDS) == (4, 3, 180),
+)
+controlled_prompt = _controlled_system_prompt() + "\n" + _controlled_user_prompt(controlled_request)
+check(
+    "主场景提示只引导受控链",
+    "get_dataset_schema" not in controlled_prompt
+    and "statistics" not in controlled_prompt
+    and "execute_skill_script 成功后立刻停止调用工具" in controlled_prompt,
+)
+check("只有文字不算主场景成功", not _controlled_contract_ok([]))
+contract_result = ToolResult(
+    success=True,
+    output={
+        "success": True,
+        "layers": [{"layer_id": "commercial_vitality_100m_all"}],
+        "output": {
+            "success": True,
+            "layers": [{"layer_id": "commercial_vitality_100m_all"}],
+            "stats": {"grid_count": 1},
+            "evidence": {"crs": {}},
+        },
+    },
+)
+check(
+    "图层统计证据齐全才算成功",
+    _controlled_contract_ok(
+        [("execute_skill_script", {"skill_id": "commercial-vitality", "params": {}}, contract_result)]
+    ),
+)
 
 # 3) 失败必须真实失败，且不注册图层
 missing = STORE.run("commercial-vitality", {"vitality_path": "missing-vitality.csv"})
@@ -160,6 +218,20 @@ check("C-06 排除派生答案", "*_activity_type fields" in evidence["excluded_
 layer = DATA_REGISTRY.get_layer("commercial_vitality_100m_all")
 check("结果图层已注册", layer is not None and layer.feature_count == grid_count)
 check("结果图层 CRS 元数据正确", layer is not None and layer.crs == "EPSG:4326")
+_finalize_generated_layers(
+    controlled_request,
+    [("commercial_vitality_100m_all", "商业供给 × 昼夜活力（all）结果图层", grid_count)],
+)
+layer_meta_path = (
+    API_ROOT
+    / "app"
+    / "workspace"
+    / "data"
+    / "layers"
+    / "commercial_vitality_100m_all.meta.json"
+)
+persisted_layer_meta = json.loads(layer_meta_path.read_text(encoding="utf-8"))
+check("受控结果图层 CRS 跨重启持久化", persisted_layer_meta.get("crs") == "EPSG:4326")
 layer_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "commercial_vitality_100m_all.json"
 geojson = json.loads(layer_path.read_text(encoding="utf-8"))
 check("GeoJSON 要素数与统计一致", len(geojson.get("features") or []) == grid_count)
