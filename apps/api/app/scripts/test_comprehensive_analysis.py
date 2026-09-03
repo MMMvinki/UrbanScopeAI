@@ -86,6 +86,24 @@ check(
 # C11：口语问句「人口就业/职住」也命中人口·就业，不被通用门2 拦走
 check("人口就业口语路由", plan_for("分析片区内的人口就业与职住比情况").intent_id == POPULATION_SKILL)
 check("职住比问句路由", plan_for("看看这个片区的职住比").intent_id == POPULATION_SKILL)
+# C11 补漏：词表全量问法都进人口·就业，且 plan 无阻断、单步真 Skill
+POPULATION_QUESTION_ROUTES = [
+    "请做一份人口画像", "人口分布怎么看", "人口就业与职住比", "职住比是多少",
+    "常住人口大概多少", "做一个人口分析", "人群分析", "人群分布",
+    "人口情况", "人群情况", "居民画像", "就业画像",
+]
+def _population_routes_ok() -> bool:
+    for phrase in POPULATION_QUESTION_ROUTES:
+        p = plan_for(phrase)
+        if p is None or p.intent_id != POPULATION_SKILL:
+            return False
+        steps = [s for s in p.plan if s.tool == "execute_skill_script"]
+        # 无阻断 = 计划里只有 1 步真 Skill，没有 blocked 步骤、没有缺数据占位
+        blocked = [s for s in p.plan if s.step_id.startswith("blocked-")]
+        if len(steps) != 1 or blocked:
+            return False
+    return True
+check("人口词表全量路由+无阻断", _population_routes_ok())
 
 
 # 2) 用小型假 runner 检查稳定结构与综合依赖门；它不替代后面的真实 Skill 验收。
