@@ -148,6 +148,10 @@ layer = DATA_REGISTRY.get_layer("public_service_profile_100m")
 check("结果图层已注册", layer is not None and layer.feature_count == grid_count)
 check("结果图层 CRS 元数据正确", layer is not None and layer.crs == "EPSG:4326")
 check("网格图层语义 kind=grid", layer is not None and layer.kind == "grid")
+# C6：四功能组设施点图层导出并注册
+pts_layer = DATA_REGISTRY.get_layer("public_service_points_study")
+check("四功能组点图层已注册", pts_layer is not None and pts_layer.geometry.value == "Point")
+check("点图层要素数=纳入数", pts_layer is not None and pts_layer.feature_count == counts["included"])
 layer_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "public_service_profile_100m.json"
 geojson = json.loads(layer_path.read_text(encoding="utf-8"))
 check("GeoJSON 要素数与统计一致", len(geojson.get("features") or []) == grid_count)

@@ -732,35 +732,87 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
         f"100m 稳定网格 {grid_count} 格（含密度平滑多档渐变；{class_parts}；类型丰富度：{richness_parts}）。"
         "仅描述当前 POI 下的相对空间现象，不推断公办民办，也不构成设施短缺或规划缺口。"
     )
+
+    # C6：导出范围内「四功能组设施点」（EPSG:4326）→ 与密度网格一起上图，设施落点是主角
+    point_layer_id = str(params.get("point_output_layer_id") or "public_service_points_study").strip()
+    point_layer: dict | None = None
+    if included_rows:
+        pts_gdf = gpd.GeoDataFrame(
+            {
+                "group_code": [r[0] for r in included_rows],
+                "group_label": [GROUP_LABELS[r[0]] for r in included_rows],
+            },
+            geometry=gpd.points_from_xy(
+                [r[1] for r in included_rows], [r[2] for r in included_rows]
+            ),
+            crs=ANALYSIS_CRS,
+        ).to_crs(OUTPUT_CRS)
+        pts_geojson = json.loads(pts_gdf.to_json(drop_id=True))
+        pts_geojson["name"] = point_layer_id
+        point_path = layer_dir / f"{point_layer_id}.json"
+        point_path.write_text(
+            json.dumps(pts_geojson, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+        )
+        point_fields = [
+            {"name": "group_code", "type": "string", "description": "功能组代码"},
+            {"name": "group_label", "type": "string", "description": "功能组名（教育文化/医疗健康/体育活动/便民与应急）"},
+        ]
+        point_classes = [
+            {"value": code, "color": GROUP_COLORS[code], "label": GROUP_LABELS[code]}
+            for code in GROUP_ORDER
+        ]
+        point_layer = {
+            "layer_id": point_layer_id,
+            "name": "公共服务设施（四功能组）",
+            "path": f"data/layers/{point_layer_id}.json",
+            "feature_count": int(len(included_rows)),
+            "geometry": "Point",
+            "crs": OUTPUT_CRS,
+            "fields": point_fields,
+            "style": {
+                "mode": "categorized",
+                "field": "group_code",
+                "classes": point_classes,
+                "radius": 5,
+                "strokeColor": "#ffffff",
+                "strokeWidth": 1,
+            },
+            "description": "按类别纳入清单归入四大功能组的设施点（研究范围内，isdelete/类别口径同网格）",
+        }
+
+    layers_out: list[dict] = [
+        {
+            "layer_id": layer_id,
+            "name": "公共服务设施资源画像",
+            "path": f"data/layers/{layer_id}.json",
+            "feature_count": grid_count,
+            "geometry": "Polygon",
+            "kind": "grid",
+            "crs": OUTPUT_CRS,
+            "fields": fields,
+            "style": {
+                "mode": "graduated",
+                "field": "facility_density_km2",
+                "method": "quantile",
+                "classes": 6,
+                "palette": PUBLIC_DENSITY_RAMP,
+                "fillColor": "#f8fafc",
+                "fillOpacity": 0.72,
+                "strokeWidth": 0,
+            },
+            "description": "100m 全局锚定格网；四功能组设施密度平滑估计多档渐变（单色浅→深，无设施格退让近底）；点数/类型丰富度/相对分型字段保留为辅助口径",
+        }
+    ]
+    if point_layer is not None:
+        layers_out.append(point_layer)
+
     return {
         "success": True,
         "summary": summary,
         "layer_id": layer_id,
         "stats": stats,
         "evidence": evidence,
-        "layers": [
-            {
-                "layer_id": layer_id,
-                "name": "公共服务设施资源画像",
-                "path": f"data/layers/{layer_id}.json",
-                "feature_count": grid_count,
-                "geometry": "Polygon",
-                "kind": "grid",
-                "crs": OUTPUT_CRS,
-                "fields": fields,
-                "style": {
-                    "mode": "graduated",
-                    "field": "facility_density_km2",
-                    "method": "quantile",
-                    "classes": 6,
-                    "palette": PUBLIC_DENSITY_RAMP,
-                    "fillColor": "#f8fafc",
-                    "fillOpacity": 0.72,
-                    "strokeWidth": 0,
-                },
-                "description": "100m 全局锚定格网；四功能组设施密度平滑估计多档渐变（单色浅→深，无设施格退让近底）；点数/类型丰富度/相对分型字段保留为辅助口径",
-            }
-        ],
+        "layers": layers_out,
     }
 
 
