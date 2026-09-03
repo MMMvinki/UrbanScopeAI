@@ -83,6 +83,9 @@ check(
     and POPULATION_SKILL in str(population_plan.plan[0].detail)
     and population_plan.plan[0].tool == "execute_skill_script",
 )
+# C11：口语问句「人口就业/职住」也命中人口·就业，不被通用门2 拦走
+check("人口就业口语路由", plan_for("分析片区内的人口就业与职住比情况").intent_id == POPULATION_SKILL)
+check("职住比问句路由", plan_for("看看这个片区的职住比").intent_id == POPULATION_SKILL)
 
 
 # 2) 用小型假 runner 检查稳定结构与综合依赖门；它不替代后面的真实 Skill 验收。
