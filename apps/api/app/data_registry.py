@@ -181,6 +181,21 @@ class DataRegistry:
     def get_schema(self, layer_id: str) -> LayerSchema | None:
         return self._schemas.get(layer_id)
 
+    @staticmethod
+    def _normalize_grid_kind(layer: LayerMetadata) -> LayerMetadata:
+        """网格产品语义一致性（D5-A/C13）：分析网格层（id 含 _100m/_500m 网格标记、面几何、
+        非瓦片）统一标 kind='grid'——旧 sidecar/manifest 存过 vector 时恢复也会正确显示
+        「栅格/网格」，避免同是网格成果却标签不一致。等时圈/缓冲区等真 polygon 不受影响。"""
+        import re
+
+        if (
+            layer.geometry.value == "Polygon"
+            and str(layer.kind or "") not in ("raster",)
+            and re.search(r"(^|_)(100m|500m)(_|$)", layer.id or "")
+        ):
+            return layer.model_copy(update={"kind": "grid"})
+        return layer
+
     def register_generated(self, layer: LayerMetadata, geojson: dict | None = None) -> None:
         """注册执行器生成的结果图层（覆盖同名 ID），可附带真实几何。
 
@@ -194,6 +209,8 @@ class DataRegistry:
             "strokeWidth", "radius", "fillColor",
             "styleMode", "visualVariables", "labelField", "visible",
         )
+        old = self._layers.get(layer.id)
+        layer = self._normalize_grid_kind(layer)
         old = self._layers.get(layer.id)
         if old is not None:
             inherit = {k: getattr(old, k) for k in _STYLE_KEYS if getattr(old, k, None) is not None}
@@ -534,6 +551,7 @@ class DataRegistry:
                     layer = LayerMetadata(**item)
                 except Exception:  # noqa: BLE001
                     continue
+                layer = self._normalize_grid_kind(layer)
                 self._layers[layer.id] = layer
                 self._schemas[layer.id] = self._build_schema(layer)
                 self._project_layer_ids.add(layer.id)

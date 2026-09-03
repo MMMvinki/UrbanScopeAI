@@ -621,6 +621,14 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
           side.layers = applyLayerGroupVisibility(store.layers, lastGroup)
         }
       }
+      // 兜底（C12）：structured 缺失或未给出任何模块成果组时（如通用/LLM 执行路径），
+      // 仍按「本次 run 实际生成的图层」收起旧层，只留本 run 成果组，避免越堆越多互相盖。
+      if (!('layers' in side)) {
+        const store = useAppStore.getState()
+        if (runGeneratedLayerIds.length) {
+          side.layers = applyLayerGroupVisibility(store.layers, runGeneratedLayerIds)
+        }
+      }
       const group = toResultGroup((event.data.result_group as Parameters<typeof toResultGroup>[0]) ?? null)
       if (group) {
         // 成果组与 run 归属：信封级 run_id 打标，供成果页「运行记录」与对话 chip 跳转
@@ -685,6 +693,10 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
   }
 }
 
+/** 本次 run 内已生成（GENERATED_LAYER）的图层 id（供 execution 收尾兜底：structured 缺失时
+ *  也把旧 run 图层收起、只留本次 run 的成果组）。run_start 重置，execution 结束后清空。 */
+let runGeneratedLayerIds: string[] = []
+
 /** 把事件折叠进 agentId 对应消息，并统一提交副作用 */
 function applyEvent(agentId: string, event: AgentEvent): void {
   const side: Partial<AppState> = {}
@@ -695,8 +707,14 @@ function applyEvent(agentId: string, event: AgentEvent): void {
   // Agent 生成图层 → 立即并图入库：地图即时显示该图层（颜色由随后的 layer_style 事件上色）
   if (event.type === 'generated_layer') {
     const layerId = String(event.data.layer_id ?? '')
-    if (layerId) void useAppStore.getState().addGeneratedLayer(layerId)
+    if (layerId) {
+      if (!runGeneratedLayerIds.includes(layerId)) runGeneratedLayerIds.push(layerId)
+      void useAppStore.getState().addGeneratedLayer(layerId)
+    }
   }
+  // 新 run 开始清空本次生成跟踪；execution 收尾后清空（防跨 run 误用）
+  if (event.type === 'run_start') runGeneratedLayerIds = []
+  if (event.type === 'execution') runGeneratedLayerIds = []
 }
 
 /** 当前执行中的 Agent 运行（Codex 式「停止」按钮）：abortAgentRun 据此中断 SSE 流 */
