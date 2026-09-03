@@ -5,7 +5,7 @@
 - 主来源为深圳市 2024 POI 全量原始总表（原始文件，含权威的原始记录数与坐标字段），
   不再以 `01-加工数据/POI分类切片` 的派生 Shapefile 作为输入；
 - 从总表开始依次执行：四域大类筛选（公共设施/科教文化服务/医疗保健服务/体育休闲服务）
-  → 候选研究范围筛选 → 大中小类纳入/排除 → 500m 网格统计；
+  → 候选研究范围筛选 → 大中小类纳入/排除 → 100m 网格统计（稀疏点密度平滑多档渐变）；
 - `01-加工数据` 中的分类 Shapefile 只用于可选交叉核对，不参与主计算；
 - 不使用 PPT/PDF 中的任何数字、地图或结论作为输入、目标值或验收基准。
 
@@ -37,9 +37,18 @@ from shapely.geometry import Point, box
 
 ANALYSIS_CRS = "EPSG:32650"  # UTM 50N，适合深圳的投影
 OUTPUT_CRS = "EPSG:4326"
-GRID_VERSION = "grid_v1_500m_epsg32650"
+# D3：公共服务 500m → 100m（与其他板块同锚点 100m 稳定网格），数字随口径重算会变
+GRID_VERSION = "grid_v1_100m_epsg32650"
 STUDY_AREA_ID = "candidate_lohas_study_area"
-CELL_SIZE_M = 500
+CELL_SIZE_M = 100
+# D3：稀疏设施点密度平滑带宽（米）。四域设施点稀疏，直接 100m 计数会大量 0/零星 1~2；
+# 用固定带宽高斯核摊到邻格（截断半径 3×带宽），距设施 >3σ 的格保持 0 —— 保留「无设施」档，
+# 不做伪 0 连续面；边缘 1 个带宽内的密度受研究区边界截断影响。
+SMOOTH_BANDWIDTH_M = 300.0
+# D3：主图层单色浅→深渐变（表达「匮乏分层」），最低档近底浅退让
+PUBLIC_DENSITY_RAMP = [
+    "#ecfdf5", "#d1fae5", "#a7f3d0", "#6ee7b7", "#34d399", "#059669",
+]
 DEFAULT_STUDY_AREA = "docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
 DEFAULT_POI = "../04-乐活大道GIS数据/00-原始数据/POI全量/深圳市2024POI.csv"
 DEFAULT_POI_ENCODING = "utf-8-sig"
@@ -318,7 +327,7 @@ def _make_grid(boundary: Any, cell_size_m: int) -> gpd.GeoDataFrame:
                 }
             )
     if not grid_rows:
-        raise AnalysisInputError("研究范围内没有生成任何 500m 格心网格")
+        raise AnalysisInputError(f"研究范围内没有生成任何 {cell_size_m}m 格心网格")
     return gpd.GeoDataFrame(grid_rows, geometry="geometry", crs=ANALYSIS_CRS).sort_values(
         ["grid_x", "grid_y"], kind="stable"
     ).reset_index(drop=True)
@@ -418,7 +427,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     if included_total < 10:
         raise AnalysisInputError("按类别纳入清单筛选后的设施点少于 10 个")
 
-    # ── 500m 稳定网格：格心入区 ─────────────────────────────────
+    # ── 100m 稳定网格：格心入区 ────────────────────────────────
     grid = _make_grid(boundary, cell_size_m)
     allowed_cells = set(grid["cell_id"])
     cell_counters: dict[str, dict[str, int]] = {
@@ -431,7 +440,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             cell_counters[cid][code] += 1
             in_grid += 1
     if in_grid < 10:
-        raise AnalysisInputError("入 500m 稳定网格的设施点少于 10 个")
+        raise AnalysisInputError(f"入 {cell_size_m}m 稳定网格的设施点少于 10 个")
 
     facility_totals: list[int] = []
     class_counts = {"none": 0, "low": 0, "high": 0}
@@ -461,7 +470,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             class_counts["none"] += 1
 
     if not facility_totals:
-        raise AnalysisInputError("没有任何 500m 网格包含纳入设施点")
+        raise AnalysisInputError(f"没有任何 {cell_size_m}m 网格包含纳入设施点")
     relative_median = _median_int(pd.Series(facility_totals))
     grid["facility_class"] = np.where(
         grid["facility_count"] == 0,
@@ -473,8 +482,40 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     if class_counts["none"] + class_counts["low"] + class_counts["high"] != len(grid):
         raise RuntimeError("facility_class 分类数量不守恒")
 
+    # ── 密度平滑列（D3）────────────────────────────────────────────
+    # 稀疏点直接按 100m 格计数 → 大量 0 / 零星 1~2 读不出结构；改用固定带宽高斯核把每个
+    # 纳入设施点摊到邻格（截断 3×带宽），格值 ≈ 每 km² 的加权点密度。距任何设施 >3σ 的格
+    # 保持 0 → 保留「无设施」档，不把空区当伪 0 连续面（详见方法论 D0 §3）。
+    bandwidth_m = SMOOTH_BANDWIDTH_M
+    sigma2 = 2.0 * bandwidth_m * bandwidth_m
+    kernel0 = 1.0 / (math.pi * sigma2) * 1_000_000.0  # 0 距核值 ≈ 每 km² 计数
+    cutoff2 = (3.0 * bandwidth_m) ** 2
+    pts_by_group: dict[str, list[tuple[float, float]]] = {code: [] for code in GROUP_ORDER}
+    for code, x, y in included_rows:
+        pts_by_group[code].append((float(x), float(y)))
+    cx = (grid["grid_x"].to_numpy(dtype=float) + 0.5) * cell_size_m
+    cy = (grid["grid_y"].to_numpy(dtype=float) + 0.5) * cell_size_m
+    grid["facility_density_km2"] = 0.0
+    for code in GROUP_ORDER:
+        density_col = f"{code}_density"
+        if not pts_by_group[code]:
+            grid[density_col] = 0.0
+            continue
+        px = np.asarray([p[0] for p in pts_by_group[code]], dtype=float)
+        py = np.asarray([p[1] for p in pts_by_group[code]], dtype=float)
+        total = np.zeros(len(grid), dtype=float)
+        for i in range(len(grid)):
+            d2 = (px - cx[i]) ** 2 + (py - cy[i]) ** 2
+            within = d2 <= cutoff2
+            if within.any():
+                total[i] = float((np.exp(-d2[within] / sigma2) * kernel0).sum())
+        grid[density_col] = np.round(total, 4)
+    grid["facility_density_km2"] = np.round(
+        sum((grid[f"{code}_density"].to_numpy(dtype=float) for code in GROUP_ORDER)), 4
+    )
+
     grid_count = len(grid)
-    cell_area_km2 = (cell_size_m / 1000.0) ** 2  # 0.25
+    cell_area_km2 = (cell_size_m / 1000.0) ** 2  # 100m → 0.01 km²
     centers = gpd.GeoSeries(
         [Point((gx + 0.5) * cell_size_m, (gy + 0.5) * cell_size_m)
          for gx, gy in zip(grid.grid_x, grid.grid_y)],
@@ -586,9 +627,12 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             "四域大类筛选（bigType∈公共设施/科教文化服务/医疗保健服务/体育休闲服务）后 " + str(total_domain),
             "坐标使用 lon_wgs84/lat_wgs84（EPSG:4326）；候选研究范围内 " + str(inside_total),
             "仅按 midType/smallType 类别字段归组（不按名称/产权/运营主体推断）",
-            "格心落入候选研究范围的 500m 单元进入结果网格",
+            f"格心落入候选研究范围的 {cell_size_m}m 单元进入结果网格",
         ],
-        "aggregation": "纳入设施点按 500m 稳定格心网格计数；类型丰富度=该格覆盖四大功能组中的几类",
+        "aggregation": (
+            f"纳入设施点按 {cell_size_m}m 稳定格心网格计数；类型丰富度=该格覆盖四大功能组中的几类；"
+            "密度平滑=高斯核固定带宽 300m 的每格加权点密度估计（个/km²），无设施区保留 0"
+        ),
         "classification": classification_desc,
         "relative_rule": (
             "无设施格=该格纳入设施数为 0；资源相对较多=设施数高于有设施格数量的中位数；"
@@ -619,6 +663,9 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             "历史供需图层或报告结论",
         ],
         "limitations": [
+            "本板块为资源数量/类型/密度盘点，未计算覆盖、可达、容量与品质（15 分钟生活圈未做）",
+            "100m 网格为 2026-09 重算口径（数字与旧 500m 版不可横比）；密度为高斯核平滑估计（带宽 300m），非逐格精确计数",
+            "研究区边缘 1 个带宽内的密度受边界截断影响",
             "资源相对较少仅表示当前 POI 数据下的相对空间现象，不构成设施短缺、服务空白或规划缺口结论",
             "不推断设施公办或民办；POI 类别字段无法证明产权和运营主体",
             "POI 数量是点位计数，不是独立建筑物数，也不是服务容量、品质或利用率",
@@ -630,7 +677,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     }
 
     # ── 写出结果图层 ────────────────────────────────────────────
-    layer_id = str(params.get("output_layer_id") or "public_service_profile_500m").strip()
+    layer_id = str(params.get("output_layer_id") or "public_service_profile_100m").strip()
     if not re.fullmatch(r"[a-z][a-z0-9_-]{1,63}", layer_id):
         raise AnalysisInputError("output_layer_id 必须为小写字母开头且仅含小写字母、数字、_、-")
     layer_dir = (workspace / "data" / "layers").resolve()
@@ -643,7 +690,11 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
         "cell_id", "grid_x", "grid_y", "grid_version", "study_area_id",
         "facility_count", "education_culture_count", "medical_health_count",
         "sports_count", "convenience_emergency_count", "type_richness",
-        "facility_class", "center_lon", "center_lat", "geometry",
+        "facility_class",
+        "education_culture_density", "medical_health_density",
+        "sports_density", "convenience_emergency_density",
+        "facility_density_km2",
+        "center_lon", "center_lat", "geometry",
     ]
     output_grid = grid[output_columns].to_crs(OUTPUT_CRS)
     geojson = json.loads(output_grid.to_json(drop_id=True, na="null"))
@@ -652,7 +703,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     layer_path.write_text(json.dumps(geojson, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
     fields = [
-        {"name": "cell_id", "type": "string", "description": "全局锚定 500m 网格 ID"},
+        {"name": "cell_id", "type": "string", "description": "全局锚定 100m 网格 ID"},
         {"name": "facility_count", "type": "integer", "description": "该格纳入设施总点数"},
         {"name": "education_culture_count", "type": "integer", "description": "教育文化设施点数"},
         {"name": "medical_health_count", "type": "integer", "description": "医疗健康设施点数"},
@@ -660,6 +711,11 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
         {"name": "convenience_emergency_count", "type": "integer", "description": "便民与应急设施点数"},
         {"name": "type_richness", "type": "integer", "description": "类型丰富度=覆盖四大功能组中的几类"},
         {"name": "facility_class", "type": "string", "description": "相对分型：none=无设施格 low=资源相对较少格 high=资源相对较多格"},
+        {"name": "education_culture_density", "type": "number", "description": "教育文化设施密度平滑估计（高斯核带宽 300m，个/km²）"},
+        {"name": "medical_health_density", "type": "number", "description": "医疗健康设施密度平滑估计（高斯核带宽 300m，个/km²）"},
+        {"name": "sports_density", "type": "number", "description": "体育活动设施密度平滑估计（高斯核带宽 300m，个/km²）"},
+        {"name": "convenience_emergency_density", "type": "number", "description": "便民与应急设施密度平滑估计（高斯核带宽 300m，个/km²）"},
+        {"name": "facility_density_km2", "type": "number", "description": "四功能组合计密度平滑估计（个/km²；距设施>900m 的格为 0）"},
     ]
 
     class_parts = ", ".join(
@@ -673,7 +729,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
         f"候选范围内 {inside_total} 条，按类别纳入清单纳入 {included_total} 个、排除 {excluded_total} 个；"
         f"教育文化 {group_counts['education_culture']}、医疗健康 {group_counts['medical_health']}、"
         f"体育活动 {group_counts['sports']}、便民与应急 {group_counts['convenience_emergency']}；"
-        f"500m 稳定网格 {grid_count} 格（{class_parts}；类型丰富度：{richness_parts}）。"
+        f"100m 稳定网格 {grid_count} 格（含密度平滑多档渐变；{class_parts}；类型丰富度：{richness_parts}）。"
         "仅描述当前 POI 下的相对空间现象，不推断公办民办，也不构成设施短缺或规划缺口。"
     )
     return {
@@ -692,8 +748,17 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
                 "kind": "grid",
                 "crs": OUTPUT_CRS,
                 "fields": fields,
-                "style": {"mode": "categorized", "field": "facility_class"},
-                "description": "500m 全局锚定格网；纳入设施点数、四大功能组数量、类型丰富度与相对分型（无设施/资源相对较少/相对较多）",
+                "style": {
+                    "mode": "graduated",
+                    "field": "facility_density_km2",
+                    "method": "quantile",
+                    "classes": 6,
+                    "palette": PUBLIC_DENSITY_RAMP,
+                    "fillColor": "#f8fafc",
+                    "fillOpacity": 0.72,
+                    "strokeWidth": 0,
+                },
+                "description": "100m 全局锚定格网；四功能组设施密度平滑估计多档渐变（单色浅→深，无设施格退让近底）；点数/类型丰富度/相对分型字段保留为辅助口径",
             }
         ],
     }

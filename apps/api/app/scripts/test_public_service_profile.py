@@ -47,8 +47,8 @@ def core_fingerprint(stats: dict) -> str:
 
 module = load_module()
 
-# 1) 稳定网格夹具（500m 全局锚）
-check("稳定网格使用全局原点", module.stable_cell_id(199750.0, 2497550.0, 500) == "g_399_4995")
+# 1) 稳定网格夹具（100m 全局锚，与其他板块同原点）
+check("稳定网格使用全局原点", module.stable_cell_id(199750.0, 2497550.0, 100) == "g_1997_24975")
 
 # 2) SkillStore 发现和静态契约
 skill = STORE.get("public-service-profile")
@@ -68,14 +68,14 @@ check("CRS 未提供返回失败", unknown_crs.get("success") is False and "CRS"
 
 bad_grid = STORE.run("public-service-profile", {"cell_size_m": 250})
 bad_grid_out = actual_output(bad_grid)
-check("非 500m 网格返回失败", bad_grid.get("success") is False and "500m" in str(bad_grid_out.get("summary")))
+check("非 100m 网格返回失败", bad_grid.get("success") is False and "100m" in str(bad_grid_out.get("summary")))
 
 # 4) 真实数据三次 SkillStore 集成运行
 meta_before = META_PATH.read_bytes()
 runs = [STORE.run("public-service-profile", {}) for _ in range(3)]
 outputs = [actual_output(item) for item in runs]
 check("三次真实运行均成功", all(item.get("success") is True for item in runs))
-check("三次均注册真实图层", all(item.get("output_layer_id") == "public_service_profile_500m" and item.get("layers") for item in runs))
+check("三次均注册真实图层", all(item.get("output_layer_id") == "public_service_profile_100m" and item.get("layers") for item in runs))
 fingerprints = [core_fingerprint(out.get("stats") or {}) for out in outputs]
 check("三次核心统计完全一致", len(set(fingerprints)) == 1, fingerprints[0])
 check("builtin 元数据运行后不漂移", META_PATH.read_bytes() == meta_before)
@@ -89,12 +89,12 @@ groups = stats["groups"]
 grids = stats["grids"]
 
 # 四源范围核验与纳入/排除守恒（主表为原始总表）
-check("网格数守恒", grid_count == 96)
+check("网格数守恒", grid_count == 2498)
 check("主表原始记录数与四域记录数", counts["source_records"] == 944688 and counts["domain_source_records"] == 83711)
 check("范围内原始点守恒", counts["inside_study"] == 4484)
 check("纳入+排除守恒", counts["included"] + counts["excluded"] == counts["inside_study"])
 check("纳入数与排除数", counts["included"] == 1839 and counts["excluded"] == 2645)
-check("入格设施点", counts["assigned_to_grid"] == 1698)
+check("入格设施点", counts["assigned_to_grid"] == 1830)
 
 # 四大功能组数量
 check("教育文化数量", groups["education_culture"]["count"] == 243)
@@ -103,14 +103,24 @@ check("体育活动数量", groups["sports"]["count"] == 456)
 check("便民与应急数量", groups["convenience_emergency"]["count"] == 740)
 check("各类总和=纳入", sum(v["count"] for v in groups.values()) == counts["included"])
 
-# 网格相对分型与丰富度
+# 网格相对分型与丰富度（D3 100m 重算口径）
 check("无设施/资源较少/较多守恒", grids["no_facility_cells"] + grids["resource_low_cells"] + grids["resource_high_cells"] == grid_count)
-check("无设施格数", grids["no_facility_cells"] == 3)
-check("资源相对较少/较多格数", grids["resource_low_cells"] == 50 and grids["resource_high_cells"] == 43)
-check("相对分界中位数", grids["relative_median"] == 15)
+check("无设施格数", grids["no_facility_cells"] == 1656)
+check("资源相对较少/较多格数", grids["resource_low_cells"] == 424 and grids["resource_high_cells"] == 418)
+check("相对分界中位数", grids["relative_median"] == 1)
 rich = grids["type_richness_cells"]
 check("丰富度守恒", rich["cells_0_types"] + rich["cells_1_types"] + rich["cells_2_types"] + rich["cells_3_types"] + rich["cells_4_types"] == grid_count)
-check("丰富度分布", rich["cells_1_types"] == 7 and rich["cells_2_types"] == 14 and rich["cells_3_types"] == 18 and rich["cells_4_types"] == 54)
+check("丰富度分布", rich["cells_1_types"] == 579 and rich["cells_2_types"] == 215 and rich["cells_3_types"] == 44 and rich["cells_4_types"] == 4)
+
+# D3 密度平滑多档（图层 applied 色带同源）
+db = stats.get("density_bands") or {}
+check(
+    "density_bands 单色渐变同源",
+    db.get("field") == "facility_density_km2"
+    and db.get("classes") == 6
+    and (db.get("palette") or [])[0] == "#ecfdf5"
+    and sum(int(b.get("count", 0)) for b in db.get("bands", [])) == grid_count,
+)
 
 # 类别审计：明确排除清单出现在输出
 excluded_labels = [e["label"] for e in stats["excluded"]]
@@ -134,10 +144,11 @@ check("明确不是短缺/缺口", any("短缺" in item or "缺口" in item for 
 check("不做生活圈/可达/供需", any("15 分钟生活圈" in item for item in limits))
 check("排除历史结论与产权推断", any("产权" in item for item in evidence["excluded_inputs"]))
 
-layer = DATA_REGISTRY.get_layer("public_service_profile_500m")
+layer = DATA_REGISTRY.get_layer("public_service_profile_100m")
 check("结果图层已注册", layer is not None and layer.feature_count == grid_count)
 check("结果图层 CRS 元数据正确", layer is not None and layer.crs == "EPSG:4326")
-layer_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "public_service_profile_500m.json"
+check("网格图层语义 kind=grid", layer is not None and layer.kind == "grid")
+layer_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "public_service_profile_100m.json"
 geojson = json.loads(layer_path.read_text(encoding="utf-8"))
 check("GeoJSON 要素数与统计一致", len(geojson.get("features") or []) == grid_count)
 

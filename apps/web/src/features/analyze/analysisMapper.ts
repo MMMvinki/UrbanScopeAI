@@ -261,6 +261,7 @@ const DENSITY_META: Record<string, { title: string; unit?: string }> = {
   activity_temporal: { title: '昼间活力', unit: '值' },
   commercial_vitality: { title: '昼间活力', unit: '值' },
   population_profile: { title: '居住人口数', unit: '人' },
+  public_service: { title: '设施密度（平滑）', unit: '个/km²' },
 }
 
 function fmtNum(n: number): string {
@@ -462,6 +463,7 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
     const list = [
       metric('100m 网格', num(stats.grid_count) != null ? formatInt(num(stats.grid_count) as number) : null),
       metric('高活力·低供给（昼）', num(obj(day.S_L_V_H).grid_count) != null ? formatInt(num(obj(day.S_L_V_H).grid_count) as number) : null),
+
       metric('低活力·高供给（昼）', num(obj(day.S_H_V_L).grid_count) != null ? formatInt(num(obj(day.S_H_V_L).grid_count) as number) : null),
       metric('高·高（昼）', num(obj(day.S_H_V_H).grid_count) != null ? formatInt(num(obj(day.S_H_V_H).grid_count) as number) : null),
       metric('低·低（昼）', num(obj(day.S_L_V_L).grid_count) != null ? formatInt(num(obj(day.S_L_V_L).grid_count) as number) : null),
@@ -484,7 +486,7 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
       metric('医疗健康', num(med.count) != null ? formatInt(num(med.count) as number) : null),
       metric('体育活动', num(sport.count) != null ? formatInt(num(sport.count) as number) : null),
       metric('便民与应急', num(convenience.count) != null ? formatInt(num(convenience.count) as number) : null),
-      metric('500m 网格', num(stats.grid_count) != null ? formatInt(num(stats.grid_count) as number) : null),
+      metric('100m 网格', num(stats.grid_count) != null ? formatInt(num(stats.grid_count) as number) : null),
     ]
     return list.filter((m): m is StatMetric => m != null)
   }
@@ -719,6 +721,8 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
     ]
   }
   if (module.module_id === 'public_service') {
+    const grad = densityLegendGroup(module)
+    if (grad) return [grad]
     const cellClasses = obj(stats.cell_classes)
     const grids = obj(stats.grids)
     const classRows = (['none', 'low', 'high'] as const).map((key) => {
@@ -754,7 +758,7 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
     const median = num(grids.relative_median)
     return [
       {
-        title: '500m 格资源相对分布',
+        title: '100m 格资源相对分布',
         rows: classRows,
         note: median != null
           ? `无设施格=设施数为 0；资源相对较多=设施数高于有设施格数量的中位数 ${median}；资源相对较少=有设施但不高于该中位数`
@@ -763,7 +767,7 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
       {
         title: '类型丰富度',
         rows: richnessRows,
-        note: '类型丰富度=一个 500m 格覆盖四大功能组中的几类',
+        note: '类型丰富度=一个 100m 格覆盖四大功能组中的几类',
       },
     ]
   }
@@ -859,7 +863,7 @@ function buildFunnel(module: AnalysisModuleResult): FunnelStep[] | undefined {
       { label: '四域大类', value: num(c.domain_source_records) },
       { label: '候选范围内', value: num(c.inside_study) },
       { label: '规划分析纳入', value: num(c.included) },
-      { label: '入 500m 稳定格', value: num(c.assigned_to_grid) },
+      { label: '入 100m 稳定格', value: num(c.assigned_to_grid) },
     ]
     return steps.every((s) => s.value != null)
       ? (steps as FunnelStep[])
@@ -1015,6 +1019,8 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
   if (module.module_id === 'public_service') {
     const groups = obj(stats.groups)
     const out: ChartGroup[] = []
+    const density = densityBandChart(module)
+    if (density) out.push(density)
     const groupBars = Object.keys(groups).map((code) => ({
       label: str(obj(groups[code]).label) || FACILITY_GROUP_LABELS[code] || code,
       value: num(obj(groups[code]).count),
@@ -1025,7 +1031,7 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
       label: str(obj(cellClasses[code]).label) || code,
       value: num(obj(cellClasses[code]).grid_count),
     })).filter((b): b is ChartBar => b.value != null)
-    if (classBars.length) out.push({ title: '500m 格 · 资源分布', bars: classBars })
+    if (classBars.length) out.push({ title: '100m 格 · 资源分布', bars: classBars })
     return out
   }
   if (module.module_id === 'population_profile') {
