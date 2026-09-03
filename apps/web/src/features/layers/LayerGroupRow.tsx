@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Eye, EyeOff, GripVertical } from 'lucide-react'
+import { ChevronDown, ChevronRight, Eye, EyeOff, Folder, GripVertical } from 'lucide-react'
 import type { DragEvent, KeyboardEvent, PointerEvent, ReactNode } from 'react'
 import type { LayerGroup } from './layerTypes'
 import { useAppStore } from '../../store/useAppStore'
@@ -196,7 +196,9 @@ export function LayerGroupRow({
             title="单击选中分组 · 双击重命名"
           >
             <span>{group.name}</span>
-            <span className="layer-row__source">分组</span>
+            <span className="layer-row__source">
+              <Folder aria-hidden="true" /> 分组
+            </span>
           </button>
         )}
       </div>

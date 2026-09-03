@@ -430,7 +430,8 @@ function DirNode({
   sourceId: string
   onRefresh: () => void
 }) {
-  const [expanded, setExpanded] = useState(depth === 0)
+  // 数据目录下所有子目录默认收起：启用数据后目录树易刷屏，需要时再逐层点开
+  const [expanded, setExpanded] = useState(false)
   const [busy, setBusy] = useState(false)
   const ready = countEnableable(node.children)
   const enabledCount = countEnabled(node.children)
@@ -507,7 +508,8 @@ function SourceCard({
   source: FolderSource
   onRefresh: () => void
 }) {
-  const [expanded, setExpanded] = useState(true)
+  // 该源已有启用图层（=「我的数据」里已有来自它图层）时默认收起目录，避免每次打开面板被刷屏
+  const [expanded, setExpanded] = useState(countEnabled(source.datasets) === 0)
   const [busy, setBusy] = useState(false)
   const tree = buildTree(source.datasets)
 
@@ -712,12 +714,12 @@ export function FolderSourcesSection() {
               title={downloadPath ?? '设置联网抓取数据的存放位置'}
             >
               <Download aria-hidden="true" />
-              {downloadPath ? '数据下载目录' : '设置数据下载目录'}
+              {downloadPath ? '平台数据存储目录' : '设置平台数据存储目录'}
             </button>
           </div>
           {downloadPath && (
             <p className="panel-hint panel-hint--compact" title={downloadPath}>
-              数据下载目录：{downloadPath}
+              平台数据存储目录：{downloadPath}
             </p>
           )}
           {loading ? (

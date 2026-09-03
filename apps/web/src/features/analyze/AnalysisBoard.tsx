@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { ArrowLeft, LayoutDashboard } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { buildSections } from './analysisMapper'
@@ -17,9 +18,24 @@ export function AnalysisBoard({ onExit }: AnalysisBoardProps) {
 
   const sections = analysis ? buildSections(analysis) : []
 
+  const { analysisFocus, setAnalysisFocus } = useAppStore((s) => ({
+    analysisFocus: s.analysisFocus,
+    setAnalysisFocus: s.setAnalysisFocus,
+  }))
+
   const scrollTo = (id: string) => {
     document.getElementById(`analysis-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
+
+  // 对话「分析页查看」跳转：进入分析页后对准目标板块卡，随后清除避免重复滚动
+  useEffect(() => {
+    if (analysisFocus) {
+      const target = analysisFocus.id
+      setAnalysisFocus(null)
+      const t = window.setTimeout(() => scrollTo(target), 60)
+      return () => window.clearTimeout(t)
+    }
+  }, [analysisFocus, setAnalysisFocus])
 
   return (
     <div className="analysis-board">

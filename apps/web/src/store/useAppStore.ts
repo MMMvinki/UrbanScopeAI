@@ -1064,6 +1064,11 @@ interface AppState {
   setHighlightGroupId: (id: string | null) => void
   /** 跳转成果页并高亮定位某次运行的分组（对话 chip 点击） */
   focusResultGroup: (groupId: string) => void
+  /** 跳转分析页并对准某板块卡（moduleId 缺省时对准最近完成板块）；AnalysisBoard 监听后滚动 */
+  focusAnalysisSection: (moduleId?: string) => void
+  /** 分析页定位目标（点击对话「分析页查看」写入，AnalysisBoard 滚动后清除） */
+  analysisFocus: { id: string; ts: number } | null
+  setAnalysisFocus: (focus: { id: string; ts: number } | null) => void
   setLeftPanelOpen: (open: boolean) => void
   toggleLeftPanel: () => void
   /** Agent 悬浮球拖拽位置（相对 workspace 的像素；null=默认右下角）。持久化 urbanscope.fabPos */
@@ -1110,6 +1115,7 @@ export const useAppStore = create<AppState>((set) => ({
   lastComprehensiveAnalysis: null,
   analysisMapModuleId: null,
   highlightGroupId: null,
+  analysisFocus: null,
   layerStyles: {},
   geojsonTick: 0,
   basemapId: DEFAULT_BASEMAP_ID,
@@ -1864,6 +1870,20 @@ export const useAppStore = create<AppState>((set) => ({
   setHighlightGroupId: (id) => set({ highlightGroupId: id }),
   focusResultGroup: (groupId) =>
     set({ activeNav: 'results', leftPanelOpen: true, highlightGroupId: groupId }),
+  setAnalysisFocus: (focus) => set({ analysisFocus: focus }),
+  focusAnalysisSection: (moduleId) =>
+    set((state) => {
+      // 缺省对准最近一次综合分析里最后一个完成的板块
+      let id = moduleId
+      if (!id) {
+        const completed = (state.lastComprehensiveAnalysis?.modules ?? []).filter((m) => m.status === 'completed')
+        id = completed.length ? completed[completed.length - 1].module_id : undefined
+      }
+      return {
+        activeNav: 'analysis',
+        analysisFocus: id ? { id, ts: Date.now() } : null,
+      }
+    }),
   focusLayer: async (layerId) => {
     // 平台数据惰性图层：先按需拉几何，再飞过去（fitBounds 需要真实 bbox）
     // Table 图层无几何：不得在定位/点亮时误取整表（只在打开属性表 PreviewModal 时按需取）
