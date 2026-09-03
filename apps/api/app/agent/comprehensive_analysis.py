@@ -177,13 +177,18 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
 
 
 def _rail_overlay_focus(question: str | None) -> list[str] | None:
-    """从问句里判断「地铁可达 × 特定资产」的聚焦类型；未提到任何资产返回 None（默认全叠）。
+    """从问句里判断「地铁可达 × 特定资产」的聚焦类型。
 
-    优先级：明确提到绿地/公共空间/公园 → 聚焦 green；提到文化 → culture；提到公共服务/设施 → public；
-    多个都提到 → 各自列出（如 ['green','culture']）。只用于向 rail skill 注入 overlay_types，不改路由判定。
+    默认（商业类/纯可达问句，未提特定资产）→ ['commercial']：只叠商业可达，不把公共/文化/绿地/其他
+    POI 全混进来。只有明确要「各种/全部/所有/盘点」才返回 None（=全叠）。
+    提到绿地/公共空间 → green；文化 → culture；公共服务/设施 → public。多个 → 各自列出。
+    只用于向 rail skill 注入 overlay_types，不改路由判定。
     """
     q = str(question or "")
     if not q:
+        return ["commercial"]
+    # 明确要盘点各类资产的可达 → 全叠（None）
+    if any(t in q for t in ("各种", "全部", "所有", "盘点", "各类", "所有设施", "各板块", "全部要素", "综合可达")):
         return None
     focus: list[str] = []
     if any(t in q for t in ("绿地", "公共空间", "公园", "广场", "绿廊")):
@@ -192,7 +197,10 @@ def _rail_overlay_focus(question: str | None) -> list[str] | None:
         focus.append("culture")
     if any(t in q for t in ("公共服务", "公共设施", "学校", "医院", "医疗", "体育设施", "便民")):
         focus.append("public")
-    return focus or None
+    if focus:
+        return focus
+    # 默认只商业（触发本 skill 的多是商业/纯可达语义，不要把其他资产混进来）
+    return ["commercial"]
 
 
 def _theme_route(q: str) -> AnalysisRoute | None:
