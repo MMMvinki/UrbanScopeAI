@@ -216,6 +216,7 @@ export function LayerPanel() {
   const focusLayer = useAppStore((s) => s.focusLayer)
   const moveLayer = useAppStore((s) => s.moveLayer)
   const moveGroup = useAppStore((s) => s.moveGroup)
+  const removeGroup = useAppStore((s) => s.removeGroup)
   const openUploadModal = useAppStore((s) => s.openUploadModal)
   const hydrateData = useAppStore((s) => s.hydrateData)
   const requestDraw = useAppStore((s) => s.requestDraw)
@@ -236,6 +237,8 @@ export function LayerPanel() {
 
   // 常显多选：已选图层 id 集合（平台只读图层不可选）；始终可用，不需进入「多选」模式
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // 已选分组 id 集合（组像图层一样可多选；删除操作条同时删被选图层与被选分组）
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set())
   // shift 范围选择的锚点（最后一次非 shift 点击的行 id；shift+点击 = 选中锚点到该行之间）
   const anchorIdRef = useRef<string | null>(null)
   // 批量分组：正在被分组的图层 id 集合（null = 未打开批量分组）
@@ -255,6 +258,7 @@ export function LayerPanel() {
   /** 清空当前选择 */
   const clearSelection = () => {
     setSelectedIds(new Set())
+    setSelectedGroupIds(new Set())
     anchorIdRef.current = null
   }
 
@@ -299,7 +303,14 @@ export function LayerPanel() {
   /** 全选 / 取消全选（已全选则清空） */
   const toggleSelectAll = () => {
     const ids = selectableIds()
-    setSelectedIds(selectedIds.size === ids.length ? new Set() : new Set(ids))
+    const allSelected = selectedIds.size === ids.length && selectedGroupIds.size === groups.length
+    if (allSelected) {
+      setSelectedIds(new Set())
+      setSelectedGroupIds(new Set())
+    } else {
+      setSelectedIds(new Set(ids))
+      setSelectedGroupIds(new Set(groups.map((g) => g.id)))
+    }
   }
 
   /** 点眼睛的成熟交互：有多选且点的是所选行 → 整组一起开关（以该行状态反向翻转）；否则单层开关 */
@@ -322,26 +333,33 @@ export function LayerPanel() {
   const handleClearMyData = async () => {
     const targets = layers.filter((layer) => !(layer.source === 'platform' && layer.readonly))
     if (targets.length === 0) return
-    if (!window.confirm(`清空「我的数据」共 ${targets.length} 个图层？\n将删除这些图层的地图与数据（平台数据不删）。`)) {
+    if (!window.confirm(`清空「我的图层」共 ${targets.length} 个？\n将删除这些图层的地图与数据（平台数据不删）。`)) {
       return
     }
     const results = await Promise.allSettled(targets.map((layer) => removeLayer(layer.id)))
     if (results.some((result) => result.status === 'rejected')) window.alert('部分图层删除失败，请重试。')
   }
 
-  /** 批量删除所选图层：只删非只读图层；逐个走后端彻底删除，部分失败时提示 */
+  /** 批量删除所选图层 + 所选分组：分组删除=移除分组（组内图层移回未分组，不删图层）；图层逐个后端删除 */
   const handleMultiDelete = async () => {
-    const targets = layers.filter((layer) => selectedIds.has(layer.id) && !layer.readonly)
-    if (targets.length === 0) return
-    const names = targets.map((layer) => `「${layer.name}」`).join('、')
+    const targetGroups = groups.filter((g) => selectedGroupIds.has(g.id))
+    const targetLayers = layers.filter((layer) => selectedIds.has(layer.id) && !layer.readonly)
+    const total = targetGroups.length + targetLayers.length
+    if (total === 0) return
+    const parts: string[] = []
+    if (targetGroups.length) parts.push(`${targetGroups.length} 个分组`)
+    if (targetLayers.length) parts.push(`${targetLayers.length} 个图层`)
     if (
       !window.confirm(
-        `删除选中的 ${targets.length} 个图层？\n${names}\n这些图层将从地图与数据中移除。`,
+        `删除选中的 ${parts.join('、')}？\n分组删除只移除分组（组内图层移回未分组）；图层将彻底移除。`,
       )
     ) {
       return
     }
-    const results = await Promise.allSettled(targets.map((layer) => removeLayer(layer.id)))
+    // 分组：本地移除（组内图层移回未分组，不删图层本身）
+    if (targetGroups.length) targetGroups.forEach((g) => removeGroup(g.id))
+    // 图层：逐个后端删除
+    const results = await Promise.allSettled(targetLayers.map((layer) => removeLayer(layer.id)))
     const failed = results.filter((result) => result.status === 'rejected')
     if (failed.length > 0) {
       window.alert(`有 ${failed.length} 个图层删除失败，请重试。`)
@@ -438,9 +456,13 @@ export function LayerPanel() {
     ...groups.flatMap((group) => group.layerIds),
     ...ungrouped.map((layer) => layer.id),
   ]
-  // 「我的数据」折叠组计数 = 分组内成员 + 未分组
+  // 「我的数据」折叠组计数 = 分组内**真实存在**的成员 + 未分组（剔除已删除图层的幽灵 id）
+  const layerIdSet = new Set(layers.map((layer) => layer.id))
   const myDataCount =
-    groups.reduce((count, group) => count + group.layerIds.length, 0) + ungrouped.length
+    groups.reduce(
+      (count, group) => count + group.layerIds.filter((id) => layerIdSet.has(id)).length,
+      0,
+    ) + ungrouped.length
   // 「我的数据」已启用图层全集（平台只读底座之外），文件路径视图按来源文件夹归类
   const myDataLayers = layers.filter((l) => !(l.source === 'platform' && l.readonly))
   // 文件路径视图：把已启用图层按「匹配到的文件夹数据源」分组，组内再按 rel_path 建树；无来源归「未关联文件夹」
@@ -523,14 +545,12 @@ export function LayerPanel() {
     setLayersVisible(group.layerIds, !allVisible)
   }
 
-  /** 点组名：选中组（把组内全部成员纳入多选）；已全选则取消 */
+  /** 点组名：选中组本身（组像图层一样可多选）；已选则取消。组内成员仍可逐层点选。 */
   const toggleSelectGroup = (group: LayerGroup) => {
-    const next = new Set(selectedIds)
-    const members = group.layerIds.filter((id) => layers.find((l) => l.id === id) != null)
-    const allSelected = members.every((id) => next.has(id))
-    if (allSelected) members.forEach((id) => next.delete(id))
-    else members.forEach((id) => next.add(id))
-    setSelectedIds(next)
+    const next = new Set(selectedGroupIds)
+    if (next.has(group.id)) next.delete(group.id)
+    else next.add(group.id)
+    setSelectedGroupIds(next)
   }
 
   /** 组头拖动把手：记录 dragged group，组头也是 drop 目标（锚点=组内首成员层 id） */
@@ -608,34 +628,8 @@ export function LayerPanel() {
   return (
     <div className="panel-content layer-panel">
       <header className="panel-header">
-        <h2 className="panel-header__title">数据图层</h2>
+        <h2 className="panel-header__title">图层</h2>
         <div className="panel-header__actions">
-          <button
-            type="button"
-            className="button button--secondary button--sm"
-            onClick={() => openUploadModal()}
-          >
-            <Plus aria-hidden="true" />
-            添加数据
-          </button>
-          <button
-            type="button"
-            className="button button--secondary button--sm"
-            onClick={() => requestDraw()}
-            title="在地图上手绘点/线/面创建图层"
-          >
-            <Pencil aria-hidden="true" />
-            新建绘制
-          </button>
-          <button
-            type="button"
-            className="button button--secondary button--sm"
-            onClick={() => void handleClearMyData()}
-            title="删除全部「我的数据」图层（保留平台数据）"
-          >
-            <Trash2 aria-hidden="true" />
-            清空我的数据
-          </button>
           <PanelCollapseButton />
         </div>
       </header>
@@ -671,42 +665,72 @@ export function LayerPanel() {
               面板翻转为「顶行=地图最前层」，平台只读底座（地图最底层）沉到列表最底。 */}
           {myDataCount > 0 && (
             <div className="layer-group layer-group--user">
-              <button
-                type="button"
-                className="layer-group__header layer-group__header--button"
-                onClick={toggleMyData}
-                aria-expanded={myDataExpanded}
-              >
-                {myDataExpanded ? (
-                  <ChevronDown aria-hidden="true" />
-                ) : (
-                  <ChevronRight aria-hidden="true" />
-                )}
-                <Users aria-hidden="true" />
-                <span className="layer-group__name">我的数据</span>
-                <span className="layer-group__count">{myDataCount}</span>
-              </button>
+              <div className="layer-group__header-row">
+                <button
+                  type="button"
+                  className="layer-group__header layer-group__header--button"
+                  onClick={toggleMyData}
+                  aria-expanded={myDataExpanded}
+                >
+                  {myDataExpanded ? (
+                    <ChevronDown aria-hidden="true" />
+                  ) : (
+                    <ChevronRight aria-hidden="true" />
+                  )}
+                  <Users aria-hidden="true" />
+                  <span className="layer-group__name">我的图层</span>
+                  <span className="layer-group__count">{myDataCount}</span>
+                </button>
+                {/* 图层操作附属到「我的图层」组头：添加图层 / 新建绘制 / 清空图层 */}
+                <div className="layer-group__actions">
+                  <button
+                    type="button"
+                    className="button button--ghost button--sm"
+                    onClick={() => openUploadModal()}
+                    title="添加图层（上传数据 / 链接目录）"
+                  >
+                    <Plus aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--ghost button--sm"
+                    onClick={() => requestDraw()}
+                    title="在地图上手绘点/线/面创建图层"
+                  >
+                    <Pencil aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--ghost button--sm"
+                    onClick={() => void handleClearMyData()}
+                    title="清空所有我的图层（保留平台数据）"
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
               {myDataExpanded && (
                 <div
                   className="layer-group__body"
                   onClick={(event) => {
-                    // 成熟交互：点「我的数据」非图层的空白处即取消多选（行/按钮/操作条内不取消）
+                    // 成熟交互：点「我的图层」非图层的空白处即取消多选（行/按钮/操作条内不取消）
                     const target = event.target as HTMLElement
                     if (target.closest('.layer-row, .layer-select-bar, button, input, label')) return
                     setSelectedIds(new Set())
+                    setSelectedGroupIds(new Set())
                   }}
                 >
-                  {/* 多选操作条：随「我的数据」出现（选中了才显示），单点=选中、shift+点=范围 */}
-                  {selectedIds.size > 0 && (
+                  {/* 多选操作条：随「我的图层」出现（选中了才显示），单点=选中、shift+点=范围 */}
+                  {(selectedIds.size > 0 || selectedGroupIds.size > 0) && (
                     <div className="layer-select-bar">
-                      <span className="layer-select-bar__count">已选 {selectedIds.size} 个图层</span>
+                      <span className="layer-select-bar__count">已选 {selectedIds.size + selectedGroupIds.size} 个</span>
                       <button
                         type="button"
                         className="button button--ghost button--sm"
                         onClick={toggleSelectAll}
                         title="全选 / 取消全选（平台数据只读不可选）"
                       >
-                        {selectedIds.size >= selectableIds().length ? (
+                        {selectedIds.size >= selectableIds().length && selectedGroupIds.size === groups.length ? (
                           <>
                             <Square aria-hidden="true" />
                             取消全选
@@ -779,7 +803,7 @@ export function LayerPanel() {
                             group={group}
                             expanded={!collapsedGroupIds.has(group.id)}
                             onToggleExpand={() => toggleGroupExpand(group.id)}
-                            selected={group.layerIds.every((id) => selectedIds.has(id))}
+                            selected={selectedGroupIds.has(group.id)}
                             onToggleSelect={() => toggleSelectGroup(group)}
                             onToggleVisibility={() => toggleGroupVisibility(group)}
                             renaming={renamingGroupId === group.id}

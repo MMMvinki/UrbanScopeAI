@@ -7051,3 +7051,31 @@ button:disabled {
   color: var(--text-tertiary);
   white-space: nowrap;
 }
+
+/* ============================================================
+   「我的图层」组头行：左折叠按钮 + 右侧图层操作（添加/绘制/清空）附属
+   ============================================================ */
+.layer-group__header-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.layer-group__header-row > .layer-group__header--button {
+  flex: 1;
+  min-width: 0;
+}
+.layer-group__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding-right: 4px;
+  opacity: 0.55;
+  transition: opacity 0.12s ease;
+}
+.layer-group--user:hover .layer-group__actions {
+  opacity: 1;
+}
+.layer-group__actions .button--ghost {
+  padding: 4px 6px;
+}
