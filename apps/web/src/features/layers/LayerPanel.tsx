@@ -1,9 +1,10 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { CheckSquare, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, Lock, Pencil, Plus, Square, Trash2, Users, X } from 'lucide-react'
 import type { DragEvent, ReactNode } from 'react'
-import type { LayerAction, LayerMetadata } from './layerTypes'
+import type { LayerAction, LayerGroup, LayerMetadata } from './layerTypes'
 import { fetchDataSources, type FolderSource } from '../../lib/api'
 import { LayerRow } from './LayerRow'
+import { LayerGroupRow } from './LayerGroupRow'
 import { PanelCollapseButton } from '../../components/PanelCollapseButton'
 import { useAppStore } from '../../store/useAppStore'
 import { StylePanel } from './StylePanel'
@@ -214,6 +215,7 @@ export function LayerPanel() {
   const duplicateLayer = useAppStore((s) => s.duplicateLayer)
   const focusLayer = useAppStore((s) => s.focusLayer)
   const moveLayer = useAppStore((s) => s.moveLayer)
+  const moveGroup = useAppStore((s) => s.moveGroup)
   const openUploadModal = useAppStore((s) => s.openUploadModal)
   const hydrateData = useAppStore((s) => s.hydrateData)
   const requestDraw = useAppStore((s) => s.requestDraw)
@@ -225,6 +227,12 @@ export function LayerPanel() {
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null)
   // 就地重命名：正在编辑的图层 id
   const [renamingId, setRenamingId] = useState<string | null>(null)
+  // 就地重命名：正在编辑的组 id（组头双击改名）
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null)
+  // 组头拖拽换序：正在拖的组 id（与图层行拖拽互斥）
+  const [dragGroupId, setDragGroupId] = useState<string | null>(null)
+  // 组展开态：收起的组 id 集合（默认全展开）
+  const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(new Set())
 
   // 常显多选：已选图层 id 集合（平台只读图层不可选）；始终可用，不需进入「多选」模式
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -501,7 +509,70 @@ export function LayerPanel() {
 
   const handleDragEnd = () => {
     setDragFromId(null)
+    setDragGroupId(null)
     setDropTarget(null)
+  }
+
+  // ── 组头交互（对准图层行语义）──────────────────────────────
+
+  /** 组「当前可见」= 组内全部图层可见；组头眼睛据此批量开关整组 */
+  const toggleGroupVisibility = (group: LayerGroup) => {
+    const allVisible =
+      group.layerIds.length > 0 &&
+      group.layerIds.every((id) => layers.find((l) => l.id === id)?.visible)
+    setLayersVisible(group.layerIds, !allVisible)
+  }
+
+  /** 点组名：选中组（把组内全部成员纳入多选）；已全选则取消 */
+  const toggleSelectGroup = (group: LayerGroup) => {
+    const next = new Set(selectedIds)
+    const members = group.layerIds.filter((id) => layers.find((l) => l.id === id) != null)
+    const allSelected = members.every((id) => next.has(id))
+    if (allSelected) members.forEach((id) => next.delete(id))
+    else members.forEach((id) => next.add(id))
+    setSelectedIds(next)
+  }
+
+  /** 组头拖动把手：记录 dragged group，组头也是 drop 目标（锚点=组内首成员层 id） */
+  const handleGroupDragStart = (groupId: string) => (_event: DragEvent<HTMLDivElement>) => {
+    setDragGroupId(groupId)
+    setDragFromId(null)
+    setDropTarget(null)
+  }
+  const handleGroupDragOver = (groupId: string) => (event: DragEvent<HTMLDivElement>) => {
+    if (!dragGroupId && !dragFromId) return
+    if (dragGroupId === groupId) return
+    if (dragFromId) return // 拖图层时组头不作为额外目标，避免干扰既有的行 drop
+    event.preventDefault()
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+    const position = event.clientY < rect.top + rect.height / 2 ? 'above' : 'below'
+    setDropTarget((prev) =>
+      prev && prev.layerId === groupId && prev.position === position ? prev : { layerId: groupId, position },
+    )
+  }
+  const handleGroupDrop = (groupId: string) => (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    if (!dragGroupId || dragGroupId === groupId) return
+    const target = dropTarget ?? { layerId: groupId, position: 'above' as const }
+    setDragGroupId(null)
+    setDropTarget(null)
+    const group = groups.find((g) => g.id === dragGroupId)
+    if (!group || group.layerIds.length === 0) return
+    // 组头落点锚点 = 组内首成员，交给 moveGroup 整块重排
+    moveGroup(dragGroupId, target.layerId === groupId ? group.layerIds[0] : target.layerId, target.position)
+  }
+  /** 组头 drop 指示：以某组内部首成员为锚点时显示在组行上 */
+  const groupDropIndicator = (group: LayerGroup): 'above' | 'below' | null =>
+    dropTarget?.layerId === group.id || dropTarget?.layerId === group.layerIds[0]
+      ? dropTarget?.position ?? null
+      : null
+  const toggleGroupExpand = (groupId: string) => {
+    setCollapsedGroupIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupId)) next.delete(groupId)
+      else next.add(groupId)
+      return next
+    })
   }
 
   const renderRow = (layerId: string) => {
@@ -700,16 +771,32 @@ export function LayerPanel() {
                     <>
                       {/* 面板翻转为「顶行=最前层」：先未分组（最前）再分组（倒序、组内也倒序） */}
                       {ungrouped.map((layer) => renderRow(layer.id)).reverse()}
-                      {[...groups].reverse().map((group) => (
-                        <div className="layer-group" key={group.id}>
-                          <div className="layer-group__header">
-                            <Folder aria-hidden="true" />
-                            <span className="layer-group__name">{group.name}</span>
-                            <span className="layer-group__count">{group.layerIds.length}</span>
-                          </div>
-                          {[...group.layerIds].reverse().map((layerId) => renderRow(layerId))}
-                        </div>
-                      ))}
+                      {[...groups].reverse().map((group) => {
+                        const memberIds = [...group.layerIds].filter((id) => layers.some((l) => l.id === id))
+                        return (
+                          <LayerGroupRow
+                            key={group.id}
+                            group={group}
+                            expanded={!collapsedGroupIds.has(group.id)}
+                            onToggleExpand={() => toggleGroupExpand(group.id)}
+                            selected={group.layerIds.every((id) => selectedIds.has(id))}
+                            onToggleSelect={() => toggleSelectGroup(group)}
+                            onToggleVisibility={() => toggleGroupVisibility(group)}
+                            renaming={renamingGroupId === group.id}
+                            onRenameRequest={() => setRenamingGroupId(group.id)}
+                            onRenameCommit={() => setRenamingGroupId(null)}
+                            onRenameCancel={() => setRenamingGroupId(null)}
+                            dragging={dragGroupId === group.id}
+                            dropIndicator={groupDropIndicator(group)}
+                            onDragStart={handleGroupDragStart(group.id)}
+                            onDragOver={handleGroupDragOver(group.id)}
+                            onDrop={handleGroupDrop(group.id)}
+                            onDragEnd={handleDragEnd}
+                          >
+                            {memberIds.map((layerId) => renderRow(layerId)).reverse()}
+                          </LayerGroupRow>
+                        )
+                      })}
                     </>
                   ) : (layerPathGroups ?? []).map((g) => (
                     <div className="layer-group" key={g.sourceId}>

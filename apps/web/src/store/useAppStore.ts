@@ -1050,6 +1050,10 @@ interface AppState {
   createGroup: (name: string, layerId?: string) => void
   moveLayerToGroup: (layerId: string, groupId: string | null) => void
   removeGroup: (groupId: string) => void
+  /** 重命名图层组（组头双击改名） */
+  renameGroup: (groupId: string, name: string) => void
+  /** 组内全部图层在面板可见序里整块重排（组头六个点拖拽）：targetLayerId 落在其 'above'|'below' */
+  moveGroup: (groupId: string, targetLayerId: string, position: 'above' | 'below') => void
   openUploadModal: (promptAfterUpload?: string, tab?: 'upload' | 'link') => void
   closeUploadModal: () => void
   addSkill: (skill: Omit<PlanningSkill, 'id'>) => void
@@ -1799,6 +1803,45 @@ export const useAppStore = create<AppState>((set) => ({
     }),
   removeGroup: (groupId) =>
     set((state) => ({ groups: state.groups.filter((group) => group.id !== groupId) })),
+  renameGroup: (groupId, name) =>
+    set((state) => ({
+      groups: state.groups.map((group) =>
+        group.id === groupId ? { ...group, name: name.trim() || group.name } : group,
+      ),
+    })),
+  moveGroup: (groupId, targetLayerId, position) =>
+    set((state) => {
+      // 组内成员在可见序里是一个连续块（模型序：分组内 + 未分组）
+      const group = state.groups.find((g) => g.id === groupId)
+      if (!group || group.layerIds.length === 0) return state
+      const movable = state.layers.filter((layer) => !(layer.source === 'platform' && layer.readonly))
+      const groupedIds = new Set(state.groups.flatMap((g) => g.layerIds))
+      let visible: string[] = []
+      for (const g of state.groups) visible.push(...g.layerIds)
+      visible = visible.concat(movable.filter((l) => !groupedIds.has(l.id)).map((l) => l.id))
+
+      const block = group.layerIds
+      if (!block.every((id) => visible.includes(id))) return state
+      const firstIdx = visible.findIndex((id) => block.includes(id))
+      const blockLength = block.length
+      visible.splice(firstIdx, blockLength) // 移除组块 → reduced
+      const targetIndex = visible.indexOf(targetLayerId)
+      if (targetIndex < 0) return state
+      const to = position === 'above' ? targetIndex + 1 : targetIndex
+      visible.splice(to, 0, ...block)
+
+      const platform = state.layers.filter((layer) => layer.source === 'platform' && layer.readonly)
+      const byId = new Map(movable.map((layer) => [layer.id, layer]))
+      const newMovable = visible
+        .map((id) => byId.get(id))
+        .filter((layer): layer is NonNullable<typeof layer> => Boolean(layer))
+      const newLayers = [...platform, ...newMovable]
+      const newGroups = state.groups.map((g) => ({
+        ...g,
+        layerIds: visible.filter((id) => g.layerIds.includes(id)),
+      }))
+      return { layers: newLayers, groups: newGroups }
+    }),
   openUploadModal: (promptAfterUpload, tab) =>
     set({
       uploadModalOpen: true,
