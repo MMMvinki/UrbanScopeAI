@@ -951,6 +951,8 @@ interface AppState {
   deleteConversation: (id: string) => void
   toggleLayerVisibility: (id: string) => void
   setLayerVisible: (id: string, visible: boolean) => void
+  /** 多选图层批量显隐（多个一起开关）；目录图层尽力持久化，点亮后补拉几何但不聚焦单层 */
+  setLayersVisible: (ids: string[], visible: boolean) => void
   showOnlyLayer: (id: string) => void
   /** 图层收尾纪律：把生成图层收敛到某个成果组（keepIds），其余生成图层收起；focusId 存在时定位到它 */
   showAnalysisLayerGroup: (ids: string[], focusId?: string) => void
@@ -1472,6 +1474,25 @@ export const useAppStore = create<AppState>((set) => ({
     }
     // 同 toggleLayerVisibility：点亮由 focusLayer 加载 + 定位，隐藏不加载，避免并发重复请求
     if (visible) void useAppStore.getState().focusLayer(id)
+  },
+  setLayersVisible: (ids, visible) => {
+    const targets = new Set(ids)
+    set((state) => ({
+      layers: state.layers.map((item) =>
+        targets.has(item.id) ? { ...item, visible } : item,
+      ),
+    }))
+    // 目录（folder）图层批量显隐尽力持久化（同单层开关语义）；失败不逐个回滚
+    const folders = useAppStore
+      .getState()
+      .layers.filter((layer) => targets.has(layer.id) && layer.source === 'folder')
+    for (const folder of folders) {
+      void patchLayerStyle(folder.id, { visible }).catch(() => {
+        // 批量操作尽力而为；下一次单层开关/整段刷新会纠正
+      })
+    }
+    // 批量点亮后补拉几何（惰性/目录大图层按需取），不聚焦单个图层避免镜头跳动
+    if (visible) void ensureVisibleGeojson()
   },
   showOnlyLayer: (id) => {
     set((state) => ({
