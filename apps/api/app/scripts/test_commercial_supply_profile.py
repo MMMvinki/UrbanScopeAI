@@ -130,6 +130,23 @@ layer_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "commercial_su
 geojson = json.loads(layer_path.read_text(encoding="utf-8"))
 check("GeoJSON 要素数与统计一致", len(geojson.get("features") or []) == grid_count)
 
+# 分类商业 POI 点图层（与网格同口径裁剪）
+poi_layer = DATA_REGISTRY.get_layer("commercial_points_study")
+check("分类 POI 图层已注册", poi_layer is not None and poi_layer.feature_count == 61186)
+check("分类 POI 图层 CRS", poi_layer is not None and poi_layer.crs == "EPSG:4326")
+poi_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "commercial_points_study.json"
+poi_geojson = json.loads(poi_path.read_text(encoding="utf-8"))
+check("POI 图层要素数与统计一致", len(poi_geojson.get("features") or []) == 61186)
+cats = stats["commercial_points_in_boundary_category"]
+check("分类构成守恒", int(cats["total"]) == 61186 and sum(int(v) for v in cats["by_category"].values()) == 61186)
+check(
+    "四大类固定分类数",
+    cats["by_category"]["购物服务"] == 30626
+    and cats["by_category"]["餐饮服务"] == 15788
+    and cats["by_category"]["生活服务"] == 12997
+    and cats["by_category"]["体育休闲服务"] == 1775,
+)
+
 print("REAL_STATS=" + json.dumps(stats, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
 print("CORE_FINGERPRINT=" + fingerprints[0])
 print("ALL PASS")

@@ -30,12 +30,14 @@ COMMERCIAL_MODULE = "commercial_supply"
 DIAGNOSIS_MODULE = "commercial_vitality"
 PUBLIC_SERVICE_MODULE = "public_service"
 POPULATION_MODULE = "population_profile"
+RAIL_ACCESSIBILITY_MODULE = "commercial_rail_accessibility"
 
 ACTIVITY_SKILL = "activity-temporal-profile"
 COMMERCIAL_SKILL = "commercial-supply-profile"
 DIAGNOSIS_SKILL = "commercial-vitality"
 PUBLIC_SERVICE_SKILL = "public-service-profile"
 POPULATION_SKILL = "population-workforce-profile"
+RAIL_ACCESSIBILITY_SKILL = "commercial-rail-accessibility"
 COMPREHENSIVE_INTENT = "project-comprehensive-analysis"
 
 
@@ -84,6 +86,13 @@ MODULE_SPECS: dict[str, ModuleSpec] = {
         "L2",
         ("候选研究范围", "常住数量（居住/工作）+ 常住画像（居住/工作）原始 TXT（GCJ-02 网格中心坐标）"),
     ),
+    RAIL_ACCESSIBILITY_MODULE: ModuleSpec(
+        RAIL_ACCESSIBILITY_MODULE,
+        "商业供给 × 地铁真实步行可达",
+        RAIL_ACCESSIBILITY_SKILL,
+        "L3",
+        ("候选研究范围", "含有效记录标记的商业点数据", "地铁出入口点（OSM 提取，WGS84）", "MAPBOX_TOKEN（真实路网等时圈）"),
+    ),
 }
 
 
@@ -117,6 +126,9 @@ _COMPREHENSIVE_TERMS = (
 _PUBLIC_SERVICE_TERMS = (
     "公共服务", "公共设施", "科教文化", "教育设施", "医疗设施", "体育设施",
     "便民设施", "应急设施", "教育", "医疗", "体育", "便民", "应急",
+)
+_RAIL_ACCESSIBILITY_TERMS = (
+    "地铁", "轨交", "轨道交通", "出入口", "等时圈", "步行可达", "步行", "可达",
 )
 
 
@@ -171,6 +183,17 @@ def route_analysis_request(question: str) -> AnalysisRoute | None:
             executable_modules=(DIAGNOSIS_MODULE,),
         )
 
+    # 商业 + 地铁/轨交/可达/等时圈语义 → 商业 × 轨交真实步行可达性。
+    # 放在纯商业单板块规则之前，确保“商业设施与地铁出入口的步行可达关系”不会被纯商业供给截走。
+    if has_commercial and _contains_any(q, _RAIL_ACCESSIBILITY_TERMS):
+        return AnalysisRoute(
+            intent_id=RAIL_ACCESSIBILITY_SKILL,
+            route_rule="R-COMMERCIAL-RAIL-ACCESSIBILITY",
+            route_reason="同时命中商业与地铁/轨交/可达/等时圈语义，选择商业供给 × 地铁真实步行可达（Mapbox walking 5/10/15 分钟等时圈）。",
+            requested_modules=(RAIL_ACCESSIBILITY_MODULE,),
+            executable_modules=(RAIL_ACCESSIBILITY_MODULE,),
+        )
+
     # 用户明确提及公共服务/公共设施/教育/医疗/体育/便民/应急语义 → 公共服务设施资源画像。
     # 放在纯商业、纯活动单板块规则之前，确保“教育、医疗、体育与便民设施分布”不会被截去。
     if _contains_any(q, _PUBLIC_SERVICE_TERMS):
@@ -215,6 +238,8 @@ def _route_from_intent(intent_id: str) -> AnalysisRoute | None:
         return route_analysis_request("分析公共服务设施资源分布")
     if intent_id == POPULATION_SKILL:
         return route_analysis_request("人口画像")
+    if intent_id == RAIL_ACCESSIBILITY_SKILL:
+        return route_analysis_request("商业与地铁出入口步行可达")
     return None
 
 

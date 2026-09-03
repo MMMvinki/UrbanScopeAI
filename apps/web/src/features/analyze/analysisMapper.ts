@@ -121,6 +121,10 @@ const MODULE_META: Record<string, { label: string; lead: string }> = {
     label: '人口·就业画像',
     lead: '居住与就业在哪里、结构与职住比——人口·就业画像',
   },
+  commercial_rail_accessibility: {
+    label: '商业供给 × 地铁真实步行可达',
+    lead: '从地铁出入口出发，5/10/15 分钟真实步行能到多少商业——商业×轨交可达性',
+  },
 }
 
 const RHYTHM_ORDER = ['D_H_N_L', 'D_L_N_H', 'D_H_N_H', 'D_L_N_L', 'ND'] as const
@@ -175,6 +179,24 @@ const RICHNESS_COLORS: Record<string, string> = {
   4: '#0d9488',
 }
 
+/** 商业大类 → 稳定配色（与后端 commercial_poi.COMMERCIAL_CATEGORY_COLORS 同源） */
+const COMMERCIAL_CATEGORY_ORDER = ['餐饮服务', '购物服务', '生活服务', '体育休闲服务', '文化娱乐服务', '其它'] as const
+const COMMERCIAL_CATEGORY_COLORS: Record<string, string> = {
+  餐饮服务: '#f4a261',
+  购物服务: '#e76f51',
+  生活服务: '#2a9d8f',
+  体育休闲服务: '#457b9d',
+  文化娱乐服务: '#9b5de5',
+  其它: '#8a8f98',
+}
+
+/** 等时圈分钟档 → 同色系（内→外 深→浅；与后端 isochrone 配色同源） */
+const ISOCHRONE_COLORS: Record<string, string> = {
+  5: '#0c4a6e',
+  10: '#0ea5e9',
+  15: '#bae6fd',
+}
+
 /** 人口·就业画像：三个群体（居住口径）的相对集聚图例配色 */
 const POPULATION_GROUP_COLORS: Record<string, string> = {
   youth: '#2563eb',
@@ -192,6 +214,8 @@ const DEGRADE_HINTS: Record<string, string> = {
     '四类 POI 分片或类别字段缺失时公共服务板块不运行；其余已就绪的活动、商业与综合诊断板块不受影响。',
   population_profile:
     '缺少常住数量或常住画像数据时人口·就业画像不运行；其余已就绪的活动、商业、综合诊断与公共服务板块不受影响。',
+  commercial_rail_accessibility:
+    '缺少地铁出入口数据或 MAPBOX_TOKEN 时真实步行可达不运行；仍可单独查看商业供给格局与分类商业 POI。',
 }
 
 /* ---------------- 数字格式化 ---------------- */
@@ -417,6 +441,21 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
     ]
     return list.filter((m): m is StatMetric => m != null)
   }
+  if (module.module_id === 'commercial_rail_accessibility') {
+    const entrances = obj(stats.entrances)
+    const centers = obj(stats.centers)
+    const acc = obj(stats.accessibility)
+    const bands = obj(acc.bands)
+    const list = [
+      metric('范围内出入口', num(entrances.in_study_area) != null ? formatInt(num(entrances.in_study_area) as number) : null, '原始 1,159 个出入口中落入研究范围'),
+      metric('本次计算中心', num(centers.requested) != null ? formatInt(num(centers.requested) as number) : null, '按 500m 商业 POI 数降序选真实出入口'),
+      metric('商业点总量', num(acc.total_commercial_points) != null ? formatInt(num(acc.total_commercial_points) as number) : null),
+      metric('5 分钟内', num(obj(bands['5']).cumulative_count) != null ? formatInt(num(obj(bands['5']).cumulative_count) as number) : null, '真实步行等时圈内'),
+      metric('10 分钟累计', num(obj(bands['10']).cumulative_count) != null ? formatInt(num(obj(bands['10']).cumulative_count) as number) : null, '含 5 分钟'),
+      metric('15 分钟累计', num(obj(bands['15']).cumulative_count) != null ? formatInt(num(obj(bands['15']).cumulative_count) as number) : null, '含 5、10 分钟'),
+    ]
+    return list.filter((m): m is StatMetric => m != null)
+  }
   return []
 }
 
@@ -465,7 +504,27 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
         points: num(item.commercial_points),
       }
     })
-    return [{ title: '高低供给', rows, note: '正密度中位数以上为高供给、以下为低供给' }]
+    const groups: LegendGroup[] = [
+      { title: '高低供给', rows, note: '正密度中位数以上为高供给、以下为低供给' },
+    ]
+    const breakdown = Array.isArray(stats.category_breakdown) ? stats.category_breakdown : []
+    const catRows: LegendRow[] = breakdown
+      .filter((r) => (num(obj(r).count) ?? 0) > 0)
+      .map((r) => {
+        const cat = str(obj(r).category)
+        return {
+          code: cat,
+          label: cat,
+          color: COMMERCIAL_CATEGORY_COLORS[cat] ?? '#8a8f98',
+          cells: null,
+          areaKm2: null,
+          points: num(obj(r).count),
+        }
+      })
+    if (catRows.length) {
+      groups.push({ title: '商业大类', rows: catRows, note: '研究范围内分类商业点数量（isdelete=0）' })
+    }
+    return groups
   }
   if (module.module_id === 'commercial_vitality') {
     return [
@@ -542,6 +601,40 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
         note: '基于居住人群口径：每格群体人数 = 居住人数 × 该群体比例之和；相对集聚 = 高于正密度格中位数。占比为人口加权估算，非个人身份。',
       },
     ]
+  }
+  if (module.module_id === 'commercial_rail_accessibility') {
+    const acc = obj(stats.accessibility)
+    const bands = obj(acc.bands)
+    const isoRows: LegendRow[] = [5, 10, 15].map((m) => ({
+      code: String(m),
+      label: `${m} 分钟`,
+      color: ISOCHRONE_COLORS[String(m)],
+      cells: null,
+      areaKm2: null,
+      points: num(obj(bands[String(m)]).cumulative_count),
+    }))
+    const groups: LegendGroup[] = [
+      {
+        title: '真实步行等时圈（累计）',
+        rows: isoRows,
+        note: 'Mapbox walking；累计口径（10 分钟含 5 分钟，15 分钟含前两档）',
+      },
+    ]
+    const totalByCat = obj(acc.total_by_category)
+    const catRows: LegendRow[] = COMMERCIAL_CATEGORY_ORDER.filter(
+      (cat) => (num(totalByCat[cat]) ?? 0) > 0,
+    ).map((cat) => ({
+      code: cat,
+      label: cat,
+      color: COMMERCIAL_CATEGORY_COLORS[cat],
+      cells: null,
+      areaKm2: null,
+      points: num(totalByCat[cat]),
+    }))
+    if (catRows.length) {
+      groups.push({ title: '商业大类', rows: catRows, note: '研究范围内分类商业点数量' })
+    }
+    return groups
   }
   return []
 }
@@ -699,7 +792,17 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
       label: str(obj(classes[key]).label) || (key === 'high_supply' ? '高供给' : '低供给'),
       value: num(obj(classes[key]).grid_count),
     })).filter((b): b is ChartBar => b.value != null)
-    return [{ title: '商业供给 · 格数', bars, note: '正密度中位数以上为高供给、以下为低供给' }]
+    const out: ChartGroup[] = [
+      { title: '商业供给 · 格数', bars, note: '正密度中位数以上为高供给、以下为低供给' },
+    ]
+    const breakdown = Array.isArray(stats.category_breakdown) ? stats.category_breakdown : []
+    const catBars: ChartBar[] = breakdown
+      .filter((r) => (num(obj(r).count) ?? 0) > 0)
+      .map((r) => ({ label: str(obj(r).category), value: num(obj(r).count) as number }))
+    if (catBars.length) {
+      out.push({ title: '商业大类 · 点数', bars: catBars, note: '研究范围内分类商业点（isdelete=0）' })
+    }
+    return out
   }
   if (module.module_id === 'commercial_vitality') {
     return (['supply_day_quadrants', 'supply_night_quadrants'] as const)
@@ -764,6 +867,29 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
           { label: '就业人群', value: Math.round(workEdu * 1000) / 10, unit: '%' },
         ],
       })
+    }
+    return out
+  }
+  if (module.module_id === 'commercial_rail_accessibility') {
+    const acc = obj(stats.accessibility)
+    const bands = obj(acc.bands)
+    const bandBars: ChartBar[] = [5, 10, 15]
+      .map((m) => ({ label: `${m} 分钟`, value: num(obj(bands[String(m)]).cumulative_count) }))
+      .filter((b): b is ChartBar => b.value != null)
+    const out: ChartGroup[] = []
+    if (bandBars.length) {
+      out.push({
+        title: '各时间档商业数量（累计）',
+        bars: bandBars,
+        note: '累计口径：10 分钟含 5 分钟，15 分钟含前两档；来自真实路网等时圈空间统计',
+      })
+    }
+    const totalByCat = obj(acc.total_by_category)
+    const catBars: ChartBar[] = COMMERCIAL_CATEGORY_ORDER.filter(
+      (cat) => (num(totalByCat[cat]) ?? 0) > 0,
+    ).map((cat) => ({ label: cat, value: num(totalByCat[cat]) as number }))
+    if (catBars.length) {
+      out.push({ title: '商业大类 · 点数', bars: catBars, note: '研究范围内分类商业点构成' })
     }
     return out
   }
@@ -847,7 +973,7 @@ function buildBoundarySection(analysis: StructuredAnalysisResult, index: number)
     '常住（202604）与客流/OD（2025 各日）的横比（日期口径不同）；通勤方式/时间/距离与 OD 流向（后续 commuting-flow-profile 范畴）',
     '公共服务覆盖范围/可达性/服务容量与品质、15 分钟生活圈（本次仅做资源数量与分布盘点，不做覆盖、可达、容量或品质评价）',
     '设施公办民办属性与产权/运营主体判定（POI 类别字段无法证明，本次不做推断）',
-    '交通可达性（缺站点、入口、路网与服务区参数）',
+    '交通可达性（综合五板块内未做；「商业 × 地铁真实步行可达」另走专用场景，仅覆盖选定的 1–5 个出入口，不等同全范围可达）',
     '商业与活动的因果关系、补建优先级、投资排序与效果预测（现有数据只能说明空间共现）',
     '土地、公共空间、产业与更新板块（不以现有能力替代）',
     '活动数据使用的 gcj02_to_wgs84 仍是候选坐标版本，尚未获数据所有者权威确认',

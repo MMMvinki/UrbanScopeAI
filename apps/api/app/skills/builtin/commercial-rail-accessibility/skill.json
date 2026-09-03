@@ -1,0 +1,75 @@
+{
+  "schema_version": "1.0",
+  "kind": "executable",
+  "id": "commercial-rail-accessibility",
+  "name": "商业 × 轨交真实步行可达性",
+  "description": "从真实原始数据出发，受控选取最多 5 个真实地铁出入口，调用 Mapbox 真实路网步行等时圈（walking 5/10/15 分钟），对研究范围内分类商业 POI 做累计空间统计（5 分钟内/10 分钟累计/15 分钟累计/15 分钟外），输出等时圈、地铁出入口、分类商业 POI 三类图层。真实路网请求失败时诚实停止，不使用演示覆盖率兜底。",
+  "scope": "builtin",
+  "version": "0.1.0",
+  "revision": 1,
+  "status": "validated",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "geopandas",
+      "numpy",
+      "pandas",
+      "pyproj",
+      "shapely",
+      "requests"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "study_area_path": {
+        "type": "string",
+        "description": "研究范围文件；默认 docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
+      },
+      "commercial_path": {
+        "type": "string",
+        "description": "商业点源；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源Export_Output_46.shp"
+      },
+      "commercial_link_path": {
+        "type": "string",
+        "description": "商业中小类连接表（OBJECTID→商业大类）；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源_商业中小类_连接表_utf8.csv"
+      },
+      "subway_entrance_path": {
+        "type": "string",
+        "description": "地铁出入口点源；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/地铁出入口/subway_entrance.shp"
+      },
+      "study_area_crs": {
+        "type": "string",
+        "default": "EPSG:4326",
+        "description": "研究范围预期 CRS"
+      },
+      "max_centers": {
+        "type": "integer",
+        "default": 5,
+        "description": "等时圈请求中心数上限（1–5，硬上限 5）"
+      }
+    },
+    "required": []
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["success", "summary", "layer_id", "stats", "evidence", "layers"]
+  },
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 0,
+    "last_run_at": null
+  },
+  "created_at": "2026-09-03T00:00:00",
+  "updated_at": "2026-09-03T00:00:00"
+}

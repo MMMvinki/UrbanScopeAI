@@ -17,6 +17,12 @@ import pandas as pd
 from pyproj import CRS
 from shapely.geometry import Point, box
 
+from app.gis.commercial_poi import (
+    COMMERCIAL_CATEGORY_COLORS,
+    COMMERCIAL_CATEGORY_ORDER,
+    load_classified_commercial_points,
+)
+
 
 ANALYSIS_CRS = "EPSG:32650"
 OUTPUT_CRS = "EPSG:4326"
@@ -24,6 +30,8 @@ GRID_VERSION = "grid_v1_100m_epsg32650"
 STUDY_AREA_ID = "candidate_lohas_study_area"
 DEFAULT_STUDY_AREA = "docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
 DEFAULT_COMMERCIAL = "../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源Export_Output_46.shp"
+DEFAULT_COMMERCIAL_LINK = "../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源_商业中小类_连接表_utf8.csv"
+POI_LAYER_ID = "commercial_points_study"
 
 
 class AnalysisInputError(ValueError):
@@ -183,10 +191,35 @@ def _supply_stats(frame: pd.DataFrame, field: str) -> dict[str, Any]:
     return result
 
 
+def _category_breakdown(frame: gpd.GeoDataFrame) -> list[dict[str, Any]]:
+    """按稳定商业大类顺序统计点数，返回 [{category, count}]（含 0 计数的已知类）。"""
+    counts = frame["category"].value_counts().to_dict()
+    return [
+        {"category": cat, "count": int(counts.get(cat, 0))}
+        for cat in COMMERCIAL_CATEGORY_ORDER
+    ]
+
+
+def _write_point_geojson(layer_dir: Path, layer_id: str, frame: gpd.GeoDataFrame) -> int:
+    """把分类商业点 GeoDataFrame 写成 GeoJSON 图层文件，返回要素数。"""
+    geojson = json.loads(
+        frame[["objectid", "name", "category", "geometry"]].to_json(
+            drop_id=True, na="null"
+        )
+    )
+    geojson["name"] = layer_id
+    geojson["crs"] = {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}}
+    (layer_dir / f"{layer_id}.json").write_text(
+        json.dumps(geojson, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+    )
+    return len(geojson.get("features") or [])
+
+
 def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     repo_root = _repo_root()
     study_path = _resolve_path(repo_root, params.get("study_area_path"), DEFAULT_STUDY_AREA)
     commercial_path = _resolve_path(repo_root, params.get("commercial_path"), DEFAULT_COMMERCIAL)
+    commercial_link_path = _resolve_path(repo_root, params.get("commercial_link_path"), DEFAULT_COMMERCIAL_LINK)
 
     study_crs = _crs(params.get("study_area_crs", OUTPUT_CRS), "研究范围")
     commercial_crs = _crs(params.get("commercial_crs", "EPSG:4547"), "商业")
@@ -282,6 +315,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     versions = {
         "study_area": _version(study_path),
         "commercial": _version(commercial_path),
+        "commercial_link": _version(commercial_link_path),
     }
     evidence = {
         "input_versions": versions,
@@ -330,29 +364,69 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
         {"name": "commercial_density_km2", "type": "number", "description": "商业点密度（个/km²）"},
         {"name": "supply_level", "type": "string", "description": "供给高低分类（H=高供给，L=低供给）"},
     ]
+
+    # 分类商业 POI 点图层（与网格同口径：isdelete=0 → EPSG:32650 → within 研究范围）。
+    poi = load_classified_commercial_points(commercial_path, commercial_link_path, boundary)
+    poi_count = _write_point_geojson(layer_dir, POI_LAYER_ID, poi)
+    category_breakdown = _category_breakdown(poi)
+    stats["category_breakdown"] = category_breakdown
+    stats["commercial_points_in_boundary_category"] = {
+        "total": poi_count,
+        "by_category": {item["category"]: item["count"] for item in category_breakdown},
+    }
+
+    poi_fields = [
+        {"name": "objectid", "type": "string", "description": "原始 OBJECTID（可追溯标识）"},
+        {"name": "name", "type": "string", "description": "商业点名称（源字段，可能为空）"},
+        {"name": "category", "type": "string", "description": "商业大类（购物/餐饮/生活/体育休闲等）"},
+    ]
+    poi_style_classes = [
+        {"value": cat, "color": COMMERCIAL_CATEGORY_COLORS[cat]}
+        for cat in COMMERCIAL_CATEGORY_ORDER
+    ]
+    layers = [
+        {
+            "layer_id": layer_id,
+            "name": "商业供给格局",
+            "path": f"data/layers/{layer_id}.json",
+            "feature_count": grid_count,
+            "geometry": "Polygon",
+            "crs": OUTPUT_CRS,
+            "fields": fields,
+            "style": {"mode": "categorized", "field": "supply_level"},
+            "description": "100m 全局锚定格网；格心入区；isdelete=0 商业点计数与正密度中位数高低供给分型",
+        },
+        {
+            "layer_id": POI_LAYER_ID,
+            "name": "分类商业 POI",
+            "path": f"data/layers/{POI_LAYER_ID}.json",
+            "feature_count": poi_count,
+            "geometry": "Point",
+            "crs": OUTPUT_CRS,
+            "fields": poi_fields,
+            "style": {
+                "mode": "categorized",
+                "field": "category",
+                "classes": poi_style_classes,
+                "radius": 5,
+                "strokeColor": "#ffffff",
+                "strokeWidth": 1,
+            },
+            "description": "isdelete=0 分类商业点（研究范围内，商业大类配色）",
+        },
+    ]
     return {
         "success": True,
         "summary": (
             f"商业供给格局已完成：{grid_count} 个稳定 100m 网格，"
             f"高供给 {supply_classes['high_supply']['grid_count']} 格、低供给 {supply_classes['low_supply']['grid_count']} 格；"
+            f"研究范围内 {poi_count} 个分类商业点（购物/餐饮/生活/体育休闲等）。"
             "商业点数量不等于营业额，结果仅描述相对供给强度。"
         ),
         "layer_id": layer_id,
         "stats": stats,
         "evidence": evidence,
-        "layers": [
-            {
-                "layer_id": layer_id,
-                "name": "商业供给格局",
-                "path": f"data/layers/{layer_id}.json",
-                "feature_count": grid_count,
-                "geometry": "Polygon",
-                "crs": OUTPUT_CRS,
-                "fields": fields,
-                "style": {"mode": "categorized", "field": "supply_level"},
-                "description": "100m 全局锚定格网；格心入区；isdelete=0 商业点计数与正密度中位数高低供给分型",
-            }
-        ],
+        "layers": layers,
     }
 
 

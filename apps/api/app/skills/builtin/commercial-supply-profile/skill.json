@@ -31,6 +31,10 @@
         "type": "string",
         "description": "商业点源；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源Export_Output_46.shp"
       },
+      "commercial_link_path": {
+        "type": "string",
+        "description": "商业中小类连接表（OBJECTID→商业大类）；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源_商业中小类_连接表_utf8.csv"
+      },
       "study_area_crs": {
         "type": "string",
         "default": "EPSG:4326",

@@ -719,8 +719,11 @@ class SkillStore:
         style = layer.get("style")
         if isinstance(style, dict):
             try:
+                from app.data_registry import DATA_REGISTRY
+                from app.models.events import EventType
                 from app.tools import layer_style as ls
 
+                classes = style.get("classes")
                 if style.get("mode") == "graduated" and style.get("field"):
                     st = ls.build_graduated_style(
                         layer_id,
@@ -730,8 +733,36 @@ class SkillStore:
                     )
                     ls.apply_renderer_style(layer_id, st, emit=emit)
                 elif style.get("mode") == "categorized" and style.get("field"):
-                    st = ls.build_categorized_style(layer_id, style["field"])
-                    ls.apply_renderer_style(layer_id, st, emit=emit)
+                    if isinstance(classes, list) and classes:
+                        # 显式分类配色（skill 声明固定色，如商业大类 / 等时圈分钟档）
+                        st = {
+                            "styleMode": "categorized",
+                            "visualVariables": {
+                                "renderer": "categorized",
+                                "categorized": {
+                                    "field": style["field"],
+                                    "classes": [dict(c) for c in classes],
+                                },
+                            },
+                        }
+                        ls.apply_renderer_style(layer_id, st, emit=emit)
+                    else:
+                        st = ls.build_categorized_style(layer_id, style["field"])
+                        ls.apply_renderer_style(layer_id, st, emit=emit)
+                # 单值样式字段（点半径/描边/填充不透明度等）：直接 patch，不动 renderer
+                #（apply_style_update 会把 styleMode 清成 single，这里不能用）。
+                singles = {
+                    key: style[key]
+                    for key in (
+                        "fillColor", "radius", "strokeColor", "strokeWidth",
+                        "fillOpacity", "strokeOpacity", "opacity",
+                    )
+                    if style.get(key) is not None
+                }
+                if singles:
+                    DATA_REGISTRY.apply_layer_patch(layer_id, singles)
+                    if emit is not None:
+                        emit(EventType.LAYER_STYLE, {"layer_id": layer_id, "style": singles})
             except Exception:
                 pass  # 设色失败不致命，图层仍显示
         return {"layer_id": layer_id, "name": meta.name, "feature_count": meta.feature_count}
