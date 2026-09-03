@@ -632,6 +632,54 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
           lastRunKeepIds = [...runGeneratedLayerIds]
         }
       }
+      // 自动归组：一次 skill run 产出的系列图层收进一个「模块组」（仅当图层尚未属于任何组，
+      // 尊重用户手动移动到别组；重复 run 幂等合并到同一组）。
+      const moduleGroupNames: Record<string, string> = {
+        activity_temporal: '活动时序',
+        commercial_supply: '商业供给',
+        commercial_vitality: '商业 × 活力',
+        public_service: '公共服务',
+        population_profile: '人口 · 就业',
+        commercial_rail_accessibility: '商业 × 地铁可达',
+        rail_network_reachability: '全区地铁可达',
+      }
+      if (structured) {
+        const completedWithLayers = structured.modules
+          .filter((m) => m.status === 'completed')
+          .map((m) => ({
+            moduleId: m.module_id,
+            label: moduleGroupNames[m.module_id] ?? m.module_id,
+            ids:
+              m.output_layer_ids && m.output_layer_ids.length
+                ? m.output_layer_ids
+                : m.output_layer
+                  ? [m.output_layer]
+                  : [],
+          }))
+          .filter((m) => m.ids.length > 0)
+        if (completedWithLayers.length) {
+          const prevGroups = useAppStore.getState().groups
+          const alreadyGrouped = new Set(prevGroups.flatMap((g) => g.layerIds))
+          let next = [...prevGroups]
+          for (const module of completedWithLayers) {
+            const gid = `group-module-${module.moduleId}`
+            const addIds = module.ids.filter((id) => !alreadyGrouped.has(id))
+            if (!addIds.length) continue
+            for (const id of addIds) alreadyGrouped.add(id)
+            const existing = next.find((g) => g.id === gid)
+            if (existing) {
+              next = next.map((g) =>
+                g.id === gid
+                  ? { ...g, layerIds: Array.from(new Set([...g.layerIds, ...addIds])) }
+                  : g,
+              )
+            } else {
+              next.push({ id: gid, name: module.label, layerIds: addIds })
+            }
+          }
+          side.groups = next
+        }
+      }
       const group = toResultGroup((event.data.result_group as Parameters<typeof toResultGroup>[0]) ?? null)
       if (group) {
         // 成果组与 run 归属：信封级 run_id 打标，供成果页「运行记录」与对话 chip 跳转
