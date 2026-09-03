@@ -50,7 +50,7 @@ export function LayerMenu({
   dataPath,
 }: LayerMenuProps) {
   const ref = useRef<HTMLDivElement>(null)
-  const [up, setUp] = useState(false)
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null)
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -62,27 +62,35 @@ export function LayerMenu({
     return () => document.removeEventListener('pointerdown', handlePointerDown)
   }, [onClose])
 
-  // 底部行菜单朝上翻转：测量菜单高度 vs 最近滚动容器的可视区。
-  // 图层列表是 overflow-y:auto 的滚动容器，菜单是其 DOM 后代会被裁剪，
-  // 下方放不下且上方空间更大时整体朝上弹（layer-menu--up）。
+  // 菜单用「视口 fixed 定位」：不再依赖 CSS 的 absolute + 父滚动容器（那会在列表滚动容器
+  // overflow-y:auto 里被裁剪，导致前部菜单项（图层样式/缩放等）看不见、点不到）。
+  // 以挂点（menu-wrap）rect 为基准，下方放不下则弹到上方，并 clamp 到视口内。
   useLayoutEffect(() => {
     const el = ref.current
     if (!el) return
-    let scroller: HTMLElement | null = el.parentElement
-    while (scroller) {
-      const oy = getComputedStyle(scroller).overflowY
-      if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') break
-      scroller = scroller.parentElement
+    const anchor = el.parentElement?.getBoundingClientRect()
+    if (!anchor) return
+    const menuW = Math.max(el.offsetWidth, 172)
+    const menuH = el.offsetHeight
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const gap = 4
+    let left = Math.min(Math.max(8, anchor.right - menuW), Math.max(8, vw - menuW - 8))
+    let top = anchor.bottom + gap
+    if (top + menuH > vh - 8) {
+      top = anchor.top - menuH - gap
     }
-    const bounds = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
-    const rect = el.getBoundingClientRect()
-    const spaceBelow = bounds.bottom - rect.top
-    const spaceAbove = rect.bottom - bounds.top
-    setUp(spaceBelow < rect.height && spaceAbove > spaceBelow)
+    top = Math.max(8, Math.min(top, vh - menuH - 8))
+    setPos({ left, top })
   }, [])
 
   return (
-    <div className={up ? 'layer-menu layer-menu--up' : 'layer-menu'} ref={ref} role="menu">
+    <div
+      className="layer-menu"
+      ref={ref}
+      role="menu"
+      style={pos ? { position: 'fixed', left: pos.left, top: pos.top, zIndex: 90 } : undefined}
+    >
       {actions
         .filter(({ action }) => {
           if (readonly && action === 'delete') return false // 只读平台数据不可删
