@@ -457,13 +457,13 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             {
                 "type": "Feature",
                 "properties": {"minute": int(m), "label": f"{m} 分钟", "kind": "reachable"},
-                "geometry": _mapping(ring),
+                "geometry": _mapping(_ro.as_wgs84(ring)),  # 米制计算 → WGS84 经纬度落盘
             }
         )
         prev = geom
     bands_gj = {"type": "FeatureCollection", "features": ring_features}
     hard_geom = boundary_m.difference(inside_levels[-1][1]) if inside_levels else boundary_m
-    hard_gj = geojson_of(hard_geom, {"kind": "hard_to_reach", "label": "难达区（15 分钟外）"})
+    hard_gj = geojson_of(_ro.as_wgs84(hard_geom), {"kind": "hard_to_reach", "label": "难达区（15 分钟外）"})
     cluster_feats = [
         {
             "type": "Feature",
@@ -647,14 +647,14 @@ def _attach_blindspot(stats: dict, geojson_by_id: dict, repo_root: Path, params:
 
         bands = (geojson_by_id.get(BANDS_LAYER_ID) or {}).get("features") or []
         band_geoms = [
-            (int(f["properties"]["minute"]), shape(f["geometry"]))
+            (int(f["properties"]["minute"]), _ro.as_meters(shape(f["geometry"])))
             for f in bands
             if f.get("geometry") and f.get("properties", {}).get("minute") is not None
         ]
         if not band_geoms:
             return False
         hard_feats = (geojson_by_id.get(HARD_LAYER_ID) or {}).get("features") or []
-        hard_m = shape(hard_feats[0]["geometry"]) if hard_feats else None
+        hard_m = _ro.as_meters(shape(hard_feats[0]["geometry"])) if hard_feats else None
         if hard_m is None:
             return False
 
@@ -706,6 +706,21 @@ def _output_from_cache(cached: dict, entrance_count: int, cache_file: Path, work
     geojson = cached.get("geojson") or {}
     # A1：缓存命中也补叠加（本地文件，快；不入 Mapbox 缓存指纹）
     _attach_blindspot(stats, geojson, repo_root, params)
+    # 迁移旧缓存：polygon 图层老数据为米制坐标，落盘前统一转 WGS84（前端按经纬度上图）
+    from shapely.geometry import mapping as _mapping
+    from shapely.geometry import shape as _shape
+
+    for _lid in (BANDS_LAYER_ID, HARD_LAYER_ID):
+        _fc = geojson.get(_lid)
+        if not _fc:
+            continue
+        _feats = []
+        for _f in (_fc.get("features") or []):
+            _g = _shape(_f.get("geometry"))
+            if _g is not None and _ro.is_meters(_g):
+                _f["geometry"] = _mapping(_ro.as_wgs84(_g))
+            _feats.append(_f)
+        _fc["features"] = _feats
     materialized = _materialize_layers(workspace, geojson)
     evidence = _build_evidence(
         [Path(v["path"]) for v in cached["evidence"]["input_versions"].values()] if cached.get("evidence") else [],

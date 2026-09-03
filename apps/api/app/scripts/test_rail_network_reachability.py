@@ -142,12 +142,12 @@ if cache_hits and f_pop.is_file() and land_real.is_file():
     bm = study.geometry.union_all()
     bands_gj = (gj.get("rail_network_walking_bands") or {}).get("features") or []
     band_geoms = [
-        (int(f["properties"]["minute"]), shape(f["geometry"]))
+        (int(f["properties"]["minute"]), rs.as_meters(shape(f["geometry"])))
         for f in bands_gj
         if f.get("geometry") and f.get("properties", {}).get("minute") is not None
     ]
     hard_gj = (gj.get("rail_network_hard_to_reach") or {}).get("features") or []
-    hard_m = shape(hard_gj[0]["geometry"]) if hard_gj else None
+    hard_m = rs.as_meters(shape(hard_gj[0]["geometry"])) if hard_gj else None
     if band_geoms and hard_m is not None:
         cum_m = rs.cum_geoms_from_bands(band_geoms, bm)
         res_real = rs.load_residential_land(land_real)

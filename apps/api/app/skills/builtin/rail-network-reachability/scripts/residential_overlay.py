@@ -37,6 +37,28 @@ def is_residential_layer(layer: Any) -> bool:
     return ("居住" in s) or bool(_RES_RE.search(s))
 
 
+def is_meters(geom: Any) -> bool:
+    """按 bounds 判断是否已投影米制（UTM 50N：y≈2.49M / 深圳）；4326 经度 y<90。"""
+    if geom is None or geom.is_empty:
+        return False
+    minx, miny, maxx, maxy = geom.bounds
+    return (maxy > 90) or (maxx > 180)
+
+
+def as_meters(geom: Any) -> Any:
+    """把几何规范到 EPSG:32650 米制（已是米制则原样；4326 则转投影）。"""
+    if is_meters(geom):
+        return geom
+    return gpd.GeoSeries([geom], crs="EPSG:4326").to_crs("EPSG:32650").iloc[0]
+
+
+def as_wgs84(geom: Any) -> Any:
+    """把米制几何转 EPSG:4326（用于落盘 geojson，前端按经纬度上图）。"""
+    if not is_meters(geom):
+        return geom
+    return gpd.GeoSeries([geom], crs="EPSG:32650").to_crs("EPSG:4326").iloc[0]
+
+
 def _km2(geom: Any) -> float:
     return float(geom.area / 1_000_000)
 
@@ -182,7 +204,7 @@ def blind_features(
     def _fc(gdf, props_fn, geometry_col="geometry"):
         feats = []
         for _, row in gdf.iterrows():
-            g = row[geometry_col]
+            g = as_wgs84(row[geometry_col])  # 米制→WGS84 经纬度，供前端上图
             if g is None or g.is_empty:
                 continue
             props = props_fn(row)
