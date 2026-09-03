@@ -8,6 +8,7 @@ import { ToolsPanel } from './features/tools/ToolsPanel'
 import { SkillPanel } from './features/skills/SkillPanel'
 import { ProjectPanel } from './features/project/ProjectPanel'
 import { ResultsPanel } from './features/results/ResultsPanel'
+import { AnalysisToast, RecentAnalysisCard } from './features/results/RecentAnalysis'
 import { ApprovalModal } from './features/agent/ApprovalModal'
 import { UploadModal } from './features/layers/UploadModal'
 import { useAppStore, type NavKey } from './store/useAppStore'
@@ -41,7 +42,12 @@ export default function App() {
 
   const leftPanel = {
     project: <ProjectPanel />,
-    data: <LayerPanel />,
+    data: (
+      <>
+        <RecentAnalysisCard />
+        <LayerPanel />
+      </>
+    ),
     tools: <ToolsPanel />,
     skills: <SkillPanel />,
     results: <ResultsPanel />,
@@ -78,6 +84,7 @@ export default function App() {
       />
       <ApprovalModal />
       <UploadModal />
+      <AnalysisToast />
     </>
   )
 }
