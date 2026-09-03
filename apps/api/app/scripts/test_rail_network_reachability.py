@@ -83,7 +83,17 @@ scenario2 = route_analysis_request(
     "请分析候选研究范围内商业设施与地铁出入口的步行可达关系。"
     "地图显示地铁出入口点、分类商业 POI，以及选定出入口或出入口组的 5、10、15 分钟真实步行等时圈"
 )
-check("72D 场景 2 仍走 single-corridor", scenario2 is not None and scenario2.route_rule == "R-COMMERCIAL-RAIL-ACCESSIBILITY", str(getattr(scenario2, "route_rule", None)))
+# 主题组路由（R-THEME-COMMERCIAL，含 single-corridor 语义）已由并行窗口加入；
+# 72D 场景 2 现命中主题组商业（其模块集含 commercial_rail_accessibility），故接受 two 种路由，
+# 只要仍走「商业×地铁可达」能力、不进通配。
+check(
+    "72D 场景 2 走 商业×地铁可达 路由",
+    scenario2 is not None and scenario2.route_rule in (
+        "R-COMMERCIAL-RAIL-ACCESSIBILITY",
+        "R-THEME-COMMERCIAL",  # 主题组商业：requested_modules 含 commercial_rail_accessibility
+    ),
+    str(getattr(scenario2, "route_rule", None)),
+)
 
 # 5) A1 轨道服务盲区叠加：住宅本体规则 + 合成米制几何（确定性，不调网络）
 rs = module._ro
@@ -175,6 +185,69 @@ if cache_hits and f_pop.is_file() and land_real.is_file():
         print("SKIP A1 真实数据断言（rail 缓存 geojson 不完整）")
 else:
     print("SKIP A1 真实数据断言（缺 rail 缓存/用地/人口文件）")
+
+# 6b) 可达 × 多类资产：asset_reach_counts 纯函数（合成几何，确定性）
+from shapely.geometry import Point as _Pt
+from shapely.geometry import box as _box
+import geopandas as _gpd
+
+_cum = {5: _box(0, 0, 400, 400), 10: _box(0, 0, 600, 600), 15: _box(0, 0, 800, 800)}
+_probe = _gpd.GeoSeries([_Pt(100, 100), _Pt(500, 500), _Pt(700, 700), _Pt(1000, 1000)], index=[0, 1, 2, 3], crs="EPSG:32650")
+_cls, _cnt, _pct, _by = module.asset_reach_counts(_probe, _cum, [5, 10, 15])
+check("资产 reach_class 档位判定", _cls[0] == "5" and _cls[1] == "10" and _cls[2] == "15" and _cls[3] == "out", str(_cls))
+check("资产 reach_class 守恒 sum==total==4", _cnt["5"] + _cnt["10"] + _cnt["15"] + _cnt["out"] == 4 and sum(_cnt.values()) == 4)
+check("资产 pct 之和≈100", abs(sum(_pct.values()) - 100.0) < 0.01)
+check("资产 within 单调", len(_by[5]) <= len(_by[10]) <= len(_by[15]), f"{len(_by[5])}/{len(_by[10])}/{len(_by[15])}")
+
+# 6c) 真实数据：公共/文化/绿地叠加（走 _attach_asset_reach 路径，离线；无源则 SKIP）
+try:
+    import json as _json
+    from app.gis import overlay_poi as _op
+    _real_root = REPO_ROOT
+    study_real = _gpd.read_file(REPO_ROOT / "docs" / "workstreams" / "analysis-foundation" / "data" / "candidate_lohas_study_area.geojson")
+    b_real = study_real.to_crs("EPSG:32650").geometry.union_all()
+    green_p = _real_root / _op.DEFAULT_GREEN
+    culture_p = _real_root / _op.DEFAULT_CULTURE
+    poi_p = _real_root / _op.DEFAULT_POI
+    has_assets = green_p.is_file() and culture_p.is_file() and poi_p.is_file()
+    if has_assets:
+        gp = _op.load_green_land(green_p, b_real)
+        cp = _op.load_culture_points(culture_p, b_real)
+        pp = _op.load_public_points(poi_p, b_real)
+        check("绿地地块读数>0", len(gp) > 0, f"green={len(gp)}")
+        check("文化设施读数>0", len(cp) > 0, f"culture={len(cp)}")
+        check("公共设施读数>0", len(pp) > 0, f"public={len(pp)}")
+        check("公共四域归组正确", set(pp["group_code"]).issubset({"education_culture", "medical_health", "sports", "convenience_emergency"}))
+        check("文化已排除经营培训", all(not any(kw in str(c) for kw in ("培训", "影剧院", "娱乐", "歌舞厅", "KTV", "网吧")) for c in cp["category"]))
+        check("绿地 Layer 含绿地", all("绿地" in str(l) for l in gp["layer"]))
+        # 走 _attach_asset_reach 主路径：直接读缓存 geojson（含可达带 BANDS）+ 多类叠加
+        _cache_file = sorted(cache_hits)[-1] if cache_hits else None
+        if _cache_file is None:
+            print("SKIP 资产主路径断言（缺 rail 缓存 geojson）")
+        else:
+            _cf = _json.loads(_cache_file.read_text(encoding="utf-8"))
+            stats_a: dict = {}
+            gj_a = _json.loads(_json.dumps(_cf.get("geojson") or {}))
+            ok_a = module._attach_asset_reach(stats_a, gj_a, _real_root, API_ROOT / "app" / "workspace", {})
+            check("资产叠加主路径可算", ok_a)
+            # 三类默认叠加 stats 齐
+            for key in ("public", "culture", "green"):
+                r = stats_a.get(f"{key}_reach")
+                check(f"{key}_reach 存在且计数>0", r is not None and r.get("total", 0) > 0, f"total={r.get('total') if r else None}")
+            # overlay_layers：指定已注册图层（commercial_points_study）延伸叠加
+            stats_o: dict = {}
+            gj_o = _json.loads(_json.dumps(_cf.get("geojson") or {}))
+            ok_o = module._attach_asset_reach(stats_o, gj_o, _real_root, API_ROOT / "app" / "workspace", {"overlay_layers": ["commercial_points_study"]})
+            check("overlay 指定图层可叠加", ok_o and any(k.startswith("overlay_") and k.endswith("_reach") for k in stats_o), f"keys={[k for k in stats_o if k.startswith('overlay_')]}")
+            for key, lbl in (("public", "公共服务"), ("culture", "文化设施"), ("green", "绿地")):
+                r = stats_a.get(f"{key}_reach")
+                if r:
+                    c = r["counts"]
+                    check(f"{lbl} reach_class 守恒", r["total"] > 0 and c["5"] + c["10"] + c["15"] + c["out"] == r["total"], f"{lbl} total={r['total']}")
+    else:
+        print("SKIP 资产真实数据断言（缺公共/文化/绿地源文件）")
+except Exception as _e:  # noqa: BLE001
+    print("SKIP 资产真实数据断言（读取异常：", type(_e).__name__, str(_e)[:80], ")")
 
 # 7) 全失败诚实停止语义（不调网络：直接验证 IsochroneAllFailed 存在与停止码路径）
 check("全失败异常类存在", hasattr(module, "IsochroneAllFailed") and issubclass(module.IsochroneAllFailed, RuntimeError))

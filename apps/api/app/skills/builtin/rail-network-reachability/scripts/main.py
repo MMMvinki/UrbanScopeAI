@@ -65,6 +65,26 @@ POI_LAYER_ID = "rail_poi_reach_study"
 # 来源参考：ColorBrewer 顺序色 YlOrBr（蓝底 overlay 用无红暖系 + 中性灰区外）
 REACH_COLORS = {"5": "#993404", "10": "#d95f0e", "15": "#fe9929", "out": "#9ca3af"}
 
+# ── 可达 × 多类资产（默认四类 + agent 可延伸任意图层）───────────────────────
+# 默认叠加的资产类型 → 其图层/统计键/色板。路径由 params 覆盖（*_path），skill 内保留默认源兜底。
+PUBLIC_LAYER_ID = "rail_public_reach_study"
+CULTURE_LAYER_ID = "rail_culture_reach_study"
+GREEN_LAYER_ID = "rail_green_reach"
+# 默认资产：key=逻辑名，label=中文（供图层/前端），color=分类色板（按 reach_class 用 REACH_COLORS）
+DEFAULT_OVERLAY_ASSETS: tuple[tuple[str, str, str], ...] = (
+    ("public", "公共服务", PUBLIC_LAYER_ID),
+    ("culture", "文化设施", CULTURE_LAYER_ID),
+    ("green", "绿地", GREEN_LAYER_ID),
+)
+# 资产叠加色板（按类）：不同资产用可区分的色系（与可达带蓝、商业暖区分开）
+ASSET_COLORS: dict[str, dict[str, str]] = {
+    "public": {"5": "#166534", "10": "#16a34a", "15": "#86efac", "out": "#9ca3af"},
+    "culture": {"5": "#4c1d95", "10": "#7c3aed", "15": "#c4b5fd", "out": "#9ca3af"},
+    "green": {"5": "#14532d", "10": "#22c55e", "15": "#bbf7d0", "out": "#9ca3af"},
+}
+# 商业保持既有 key（commercial_reach），默认叠加从 public/culture/green 开始（商业另走 _attach_commercial_reach）
+DEFAULT_COMMERCIAL_ASSET = "commercial"
+
 
 class AnalysisInputError(ValueError):
     """输入/口径不满足本 Skill 契约。"""
@@ -491,6 +511,8 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     _attach_blindspot(stats, geojson_by_id, repo_root, params)
     # 商业 POI × 地铁可达：reach_class 第 4 图层 rail_poi_reach_study + stats（只加不拆）
     _attach_commercial_reach(stats, geojson_by_id, repo_root, params)
+    # 可达 × 多类资产：默认 公共/文化/绿地 + agent 指定 overlay_layers（只加不拆，本地读源不入指纹）
+    _attach_asset_reach(stats, geojson_by_id, repo_root, workspace, params)
 
     evidence = _build_evidence(
         versions,
@@ -541,6 +563,7 @@ def _build_evidence(
         "出入口簇仅按 300m 距离聚簇的「出入口簇/代表出入口」，不构成地铁站名归属",
         "覆盖率受路网与步行假设影响；难达区指 15 分钟步行未覆盖区域，不代表无任何交通可达",
         "商业点计数是点位数量，不是服务容量或真实人流",
+        "公共服务/文化/绿地叠加计数是点位或地块数量，不是服务容量、品质或真实可达水平；绿地按 Layer 含「绿地」的地块纳入",
     ]
     if cached:
         limits.append("本次命中预计算缓存（输入 sha256 校验一致），未重新请求 Mapbox")
@@ -581,7 +604,25 @@ def _materialize_layers(workspace: Path, geojson_by_id: dict[str, dict]) -> list
         BLIND_POP_LAYER_ID: {"mode": "categorized", "field": "kind", "classes": [{"value": "population_blindspot", "color": "#f97316"}], "fillColor": "#f97316", "fillOpacity": 0.55, "strokeColor": "#9a3412", "strokeWidth": 1},
         POI_LAYER_ID: {"mode": "categorized", "field": "reach_class", "classes": [{"value": v, "color": c} for v, c in REACH_COLORS.items()], "radius": 2.4, "fillColor": "#e11d48", "strokeColor": "#ffffff", "strokeWidth": 1, "fillOpacity": 0.9},
     }
+    # 可达 × 多类资产图层按 reach_class 分档上色（用资产色板，与可达带蓝/商业暖区分）
+    _ASSET_REACH_STYLES: dict[str, dict] = {}
+    for key, _label, layer_id in DEFAULT_OVERLAY_ASSETS:
+        _ASSET_REACH_STYLES[layer_id] = {
+            "mode": "categorized",
+            "field": "reach_class",
+            "classes": [{"value": v, "color": c} for v, c in ASSET_COLORS[key].items()],
+            "radius": 2.6 if key != "green" else None,
+            "fillColor": "#111827",
+            "strokeColor": "#ffffff",
+            "strokeWidth": 1,
+            "fillOpacity": 0.4 if key == "green" else 0.9,
+        }
     for layer_id, gj in geojson_by_id.items():
+        style = styles.get(layer_id) or _ASSET_REACH_STYLES.get(layer_id) or (
+            # overlay 图层（agent 指定任意层）兜底按 reach_class，取商业同款暖色
+            {"mode": "categorized", "field": "reach_class", "classes": [{"value": v, "color": c} for v, c in REACH_COLORS.items()], "radius": 2.4, "fillColor": "#111827", "strokeColor": "#ffffff", "strokeWidth": 1, "fillOpacity": 0.9}
+            if layer_id.startswith("rail_overlay_") else None
+        )
         path = layer_dir / f"{layer_id}.json"
         path.write_text(json.dumps(gj, ensure_ascii=False), encoding="utf-8")
         count = len(gj.get("features") or [])
@@ -593,7 +634,7 @@ def _materialize_layers(workspace: Path, geojson_by_id: dict[str, dict]) -> list
             "feature_count": count,
             "geometry": geom,
             "crs": OUTPUT_CRS,
-            "style": styles[layer_id],
+            "style": style or {},
         }
         layer["description"] = _layer_name(layer_id)
         out.append(layer)
@@ -619,6 +660,9 @@ def _layer_name(layer_id: str) -> str:
         BLIND_RES_LAYER_ID: "盲区居住地块（15 分钟步行外）",
         BLIND_POP_LAYER_ID: "盲区人口/就业格（15 分钟步行外）",
         POI_LAYER_ID: "商业 POI · 地铁步行可达（5/10/15/外）",
+        PUBLIC_LAYER_ID: "公共服务设施 · 地铁步行可达（5/10/15/外）",
+        CULTURE_LAYER_ID: "文化设施 · 地铁步行可达（5/10/15/外）",
+        GREEN_LAYER_ID: "绿地地块 · 地铁步行可达（5/10/15/外）",
     }.get(layer_id, layer_id)
 
 
@@ -799,6 +843,229 @@ def _attach_commercial_reach(stats: dict, geojson_by_id: dict, repo_root: Path, 
         return False
 
 
+def asset_reach_counts(probe_m: Any, cum: dict[int, Any], mins: list[int]) -> tuple[dict[int, str], dict[str, int], dict[str, float], dict[int, list[int]]]:
+    """对一块资产（米制代表点 GeoSeries）按可达带并集求 reach_class。
+
+    返回 (cls_map, counts, pct, within_by_m)：每要素归属档（≤5/≤10/≤15/out）、各档数量、占比、各档命中索引。
+    纯函数，可注入合成几何测试。reach_class 语义：≤5⊆≤10⊆≤15，逐档从剩余中取，剩下为 out。
+    """
+    idx = list(probe_m.index)
+    cls_map: dict[int, str] = {}
+    remaining = set(idx)
+    within_by_m: dict[int, list[int]] = {}
+    for m in mins:
+        hit = [ix for ix in remaining if bool(probe_m.loc[ix].within(cum[m]))]
+        for ix in hit:
+            cls_map[ix] = str(m)
+            remaining.discard(ix)
+        within_by_m[m] = hit
+    for ix in remaining:
+        cls_map[ix] = "out"
+    labels = [str(m) for m in mins] + ["out"]
+    counts = {lab: int(sum(1 for c in cls_map.values() if c == lab)) for lab in labels}
+    total = int(len(probe_m))
+    pct = {lab: round(counts[lab] / total * 100, 2) if total else 0.0 for lab in labels}
+    return cls_map, counts, pct, within_by_m
+
+
+def _load_asset_gdf(key: str, repo_root: Path, params: dict, boundary_m: Any, _op: Any) -> gpd.GeoDataFrame | None:
+    """按资产 key 从 params（优先）或仓库默认源读几何（EPSG:4326）；缺文件/失败返回 None（可选叠加跳过）。"""
+    param_key = {"public": "public_poi_path", "culture": "culture_path", "green": "green_land_path"}.get(key)
+    default = {"public": _op.DEFAULT_POI, "culture": _op.DEFAULT_CULTURE, "green": _op.DEFAULT_GREEN}.get(key)
+    try:
+        if params.get(param_key):
+            path = _resolve_path(repo_root, params[param_key], default)
+        else:
+            cand = (repo_root / default).resolve()
+            if not cand.is_file():
+                return None
+            path = cand
+        loader = {"public": _op.load_public_points, "culture": _op.load_culture_points, "green": _op.load_green_land}[key]
+        return loader(path, boundary_m)
+    except Exception:  # noqa: BLE001 —— 单资产缺文件/口径不满足 → 跳过该项叠加
+        return None
+
+
+def _cat_column(gdf: gpd.GeoDataFrame) -> str | None:
+    for col in ("category", "group_label", "layer"):
+        if col in gdf.columns:
+            return col
+    return None
+
+
+def _attach_one_asset(
+    stats: dict, geojson_by_id: dict, repo_root: Path, params: dict,
+    key: str, label: str, layer_id: str, boundary_m: Any, cum: dict[int, Any], mins: list[int],
+) -> None:
+    """对单块资产做 reach 叠加：写 stats.<key>_reach + 点/面图层 <layer_id>。缺失/失败不阻断主结果。"""
+    from app.gis import overlay_poi as _op
+    from shapely.geometry import mapping as _mapping
+
+    gdf = _load_asset_gdf(key, repo_root, params, boundary_m, _op)
+    if gdf is None or len(gdf) == 0:
+        return
+    gdf_m = gdf.to_crs(ANALYSIS_CRS)
+    probe = gdf_m.geometry.representative_point()
+    cls_map, counts, pct, _by_m = asset_reach_counts(probe, cum, mins)
+
+    cat_col = _cat_column(gdf)
+    by_cat: dict[str, dict[str, int]] = {}
+    for lab in [str(m) for m in mins] + ["out"]:
+        sub = gdf.loc[[ix for ix in gdf.index if cls_map.get(ix) == lab]]
+        if len(sub) == 0:
+            continue
+        if cat_col and sub[cat_col].dtype == object:
+            by_cat[lab] = {str(k): int(v) for k, v in sub[cat_col].value_counts().items()}
+
+    reach15 = int(sum(counts[str(m)] for m in mins))
+    stats[f"{key}_reach"] = {
+        "label": label,
+        "total": int(len(gdf)),
+        "counts": counts,
+        "pct": pct,
+        "by_category": by_cat,
+        "class_tiers": [str(m) for m in mins],
+        "reach15_cumulative": reach15,
+        "conservation": {
+            "reach15_cumulative": reach15,
+            "out": counts["out"],
+            "total": int(len(gdf)),
+            "sum": int(len(gdf)),
+        },
+    }
+
+    feats = []
+    for ix in gdf.index:
+        prop: dict[str, Any] = {"reach_class": cls_map[ix], "label": label, "asset": key}
+        if cat_col:
+            prop["category"] = str(gdf.loc[ix, cat_col])
+        feats.append({"type": "Feature", "properties": prop, "geometry": _mapping(gdf.loc[ix].geometry)})
+    geojson_by_id[layer_id] = {"type": "FeatureCollection", "features": feats}
+
+
+def _attach_layer_asset(
+    stats: dict, geojson_by_id: dict, workspace: Path,
+    layer_id: str, boundary_m: Any, cum: dict[int, Any], mins: list[int],
+) -> None:
+    """agent 指定任意已注册图层（overlay_layers）：读其物化 geojson（EPSG:4326）做 reach 叠加。"""
+    from app.gis import overlay_poi as _op
+    from shapely.geometry import mapping as _mapping
+
+    path = (workspace / "data" / "layers" / f"{layer_id}.json").resolve()
+    if not path.is_file():
+        return
+    try:
+        gdf = _op.load_overlay_layer(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 —— 单图层不可读则跳过
+        return
+    if "geometry" not in gdf.columns or len(gdf) == 0:
+        return
+    # 落到研究范围内（点/面均可）
+    try:
+        inside = gdf.loc[gdf.geometry.to_crs(ANALYSIS_CRS).intersects(boundary_m) | gdf.geometry.to_crs(ANALYSIS_CRS).within(boundary_m)]
+    except Exception:  # noqa: BLE001
+        inside = gdf
+    gdf_m = inside.to_crs(ANALYSIS_CRS)
+    probe = gdf_m.geometry.representative_point()
+    cls_map, counts, pct, _by_m = asset_reach_counts(probe, cum, mins)
+    overlay_layer_id = f"rail_overlay_{layer_id}"
+
+    stats[f"overlay_{layer_id}_reach"] = {
+        "label": f"图层 {layer_id}",
+        "layer_id": layer_id,
+        "total": int(len(gdf_m)),
+        "counts": counts,
+        "pct": pct,
+        "class_tiers": [str(m) for m in mins],
+        "reach15_cumulative": int(sum(counts[str(m)] for m in mins)),
+        "conservation": {
+            "reach15_cumulative": int(sum(counts[str(m)] for m in mins)),
+            "out": counts["out"],
+            "total": int(len(gdf_m)),
+        },
+    }
+    feats = []
+    cat_col = _cat_column(gdf)
+    for ix in inside.index:
+        prop: dict[str, Any] = {"reach_class": cls_map[ix], "asset": f"overlay:{layer_id}"}
+        if cat_col:
+            prop["category"] = str(gdf.loc[ix, cat_col])
+        feats.append({"type": "Feature", "properties": prop, "geometry": _mapping(gdf.loc[ix].geometry)})
+    geojson_by_id[overlay_layer_id] = {"type": "FeatureCollection", "features": feats}
+
+
+def _attach_asset_reach(stats: dict, geojson_by_id: dict, repo_root: Path, workspace: Path, params: dict) -> bool:
+    """可达 × 多类资产（默认公共/文化/绿地 + agent 指定 overlay_layers）。
+
+    商业走既有 _attach_commercial_reach（stats.commercial_reach / rail_poi_reach_study 不动，向后兼容）。
+    只加不拆：单资产缺失/失败不阻断主结果；本地读文件/图层，不入 Mapbox 指纹。
+    """
+    try:
+        from shapely.geometry import shape
+
+        study_path = _resolve_path(repo_root, params.get("study_area_path"), DEFAULT_STUDY_AREA)
+        study_crs = _crs(params.get("study_area_crs", OUTPUT_CRS), "研究范围")
+        boundary_m, _area = load_study_boundary(study_path, study_crs)
+        bands = (geojson_by_id.get(BANDS_LAYER_ID) or {}).get("features") or []
+        band_geoms = [
+            (int(f["properties"]["minute"]), _ro.as_meters(shape(f["geometry"])))
+            for f in bands
+            if f.get("geometry") and f.get("properties", {}).get("minute") is not None
+        ]
+        if not band_geoms:
+            return False
+        cum = _ro.cum_geoms_from_bands(band_geoms, boundary_m)
+        mins = sorted(cum)
+        if not mins:
+            return False
+
+        for key, label, layer_id in DEFAULT_OVERLAY_ASSETS:
+            _attach_one_asset(stats, geojson_by_id, repo_root, params, key, label, layer_id, boundary_m, cum, mins)
+        for layer_id in params.get("overlay_layers") or []:
+            if isinstance(layer_id, str) and layer_id.strip():
+                _attach_layer_asset(stats, geojson_by_id, workspace, str(layer_id).strip(), boundary_m, cum, mins)
+        return True
+    except Exception:  # noqa: BLE001 —— 资产叠加失败不阻断可达主结果
+        return False
+
+
+def _list_overlay_candidates(repo_root: Path, workspace: Path) -> list[dict[str, Any]]:
+    """枚举当前「可叠加」的资产：默认四类源 + 已物化的点/面图层（EPSG:4326）。
+
+    基于已链接/已注册的索引（data/layers 物化清单），不做全盘扫盘——高效、可交给 agent 挑选后经
+    overlay_layers / *_path 参数传入。返回 [_candidates]，每项含 name/type/geometry/source/layer_id 或 path。
+    """
+    from app.gis import overlay_poi as _op
+
+    out: list[dict[str, Any]] = []
+    for key, label, layer_id in DEFAULT_OVERLAY_ASSETS:
+        out.append({"key": key, "label": label, "name": f"{label}（默认叠加）", "geometry": "Point" if key != "green" else "Polygon", "source": "default", "layer_id": layer_id})
+    # 已物化点/面图层（data/layers/*.json，EPSG:4326）
+    layer_dir = (workspace / "data" / "layers").resolve()
+    if layer_dir.is_dir():
+        for f in sorted(layer_dir.glob("*.json")):
+            if f.name.endswith(".meta.json"):
+                continue
+            lid = f.stem
+            if len(out) > 80:  # 防爆量
+                break
+            try:
+                feats = json.loads(f.read_text(encoding="utf-8")).get("features") or []
+            except Exception:  # noqa: BLE001
+                feats = []
+            if not feats:
+                continue
+            gtype = (feats[0].get("geometry") or {}).get("type")
+            if gtype not in ("Point", "Polygon", "MultiPolygon"):
+                continue
+            out.append({
+                "key": f"layer:{lid}", "label": lid, "name": lid,
+                "geometry": "Polygon" if gtype != "Point" else "Point",
+                "source": "layer", "layer_id": lid, "path": str(f),
+            })
+    return out
+
+
 def _output(stats: dict[str, Any], evidence: dict[str, Any], materialized: list[dict], entrance_count: int, cluster_dist: int) -> dict[str, Any]:
     conserve = stats["conservation"]
     summary = (
@@ -828,6 +1095,8 @@ def _output_from_cache(cached: dict, entrance_count: int, cache_file: Path, work
     _attach_blindspot(stats, geojson, repo_root, params)
     # 商业 POI × 地铁可达：缓存命中同样补（本地读商业文件）
     _attach_commercial_reach(stats, geojson, repo_root, params)
+    # 可达 × 多类资产：缓存命中同样补（本地读源/图层，不入 Mapbox 指纹）
+    _attach_asset_reach(stats, geojson, repo_root, workspace, params)
     # 迁移旧缓存：polygon 图层老数据为米制坐标，落盘前统一转 WGS84（前端按经纬度上图）
     from shapely.geometry import mapping as _mapping
     from shapely.geometry import shape as _shape

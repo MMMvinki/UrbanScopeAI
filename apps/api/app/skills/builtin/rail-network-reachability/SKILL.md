@@ -41,3 +41,28 @@
 
 三档可达带 + 难达区 + 出入口簇代表三类图层，及 stats（覆盖面积/率/难达/守恒/商业点
 累计与分类）、evidence（输入 sha256、坐标、聚类口径、成功/失败中心、缓存命中与否）。
+
+## 可达 × 多类资产（默认四类 + 可延伸）
+
+默认叠加四类资产做可达盘点（商业 + 公共服务 + 文化设施 + 绿地），各产出
+`reach_class`（≤5/≤10/≤15/外）点/面图层与 `stats.<key>_reach`（计数/占比/分类构成/守恒）：
+
+| key | 图层 | 数据源（路径均可用 `*_path` 参数覆盖） |
+|---|---|---|
+| commercial | `rail_poi_reach_study` | 商业源 + 连接表（isdelete=0） |
+| public | `rail_public_reach_study` | POI 主表（四域纳入清单） |
+| culture | `rail_culture_reach_study` | 文化资源 shp（排除经营/培训） |
+| green | `rail_green_reach` | 用地 shp（Layer 含「绿地」地块，面） |
+
+**路径不是写死的**：默认值仅作仓库内兜底，agent/调用方始终可用
+`commercial_path` / `public_poi_path` / `culture_path` / `green_land_path` 传入真实源；
+更推荐用 **`overlay_layers`** 把任意已注册 POI/AOI 图层 id 传给本 Skill，Skill 读其
+`data/layers/<id>.json`（EPSG:4326，点/面均可）做可达叠加，输出 `rail_overlay_<id>` 图层与
+`stats.overlay_<id>_reach`。
+
+**发现可叠加资产（高效，不扫盘）**：`_list_overlay_candidates(repo_root, workspace)` 返回
+「默认四类 + 已物化点/面图层」的候选清单（名称/几何/来源/图层 id），agent 依此挑选后经
+`overlay_layers` / `*_path` 注入。候选基于 data/layers 物化索引与目录快照，非全盘扫描。
+
+红线补充：公共服务/文化/绿地计数是点位或地块数量，不是服务容量、品质或真实可达水平；
+绿地按 Layer 含「绿地」的地块纳入，不推断产权/运营。

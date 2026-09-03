@@ -606,6 +606,17 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
       metric('难达区人口/就业', num(rb.home_blind) != null && num(rb.work_blind) != null ? `${formatInt(num(rb.home_blind) as number)} / ${formatInt(num(rb.work_blind) as number)}` : null, '盲区内居住 / 就业人口'),
       metric('商业可达 ≤5 / ≤10 / ≤15', c5 != null && c10 != null && c15 != null ? `${formatInt(c5)} / ${formatInt(c10)} / ${formatInt(c15)}` : null, '研究范围内商业点在各分钟并集内的 within 计数'),
       metric('商业 区外(>15)', cOut != null && crTot != null && crTot > 0 ? `${formatInt(cOut)} 个 · ${formatNumber(Math.round((cOut / crTot) * 1000) / 10)}%` : null, '=地铁 15 分钟步行不可达'),
+      // 可达 × 多类资产：公共/文化/绿地 ≤15 可及（默认四类 + overlay_layers）
+      ...[
+        { label: '公共服务 ≤15 可及', key: 'public', unit: '个' },
+        { label: '文化设施 ≤15 可及', key: 'culture', unit: '个' },
+        { label: '绿地 ≤15 可及', key: 'green', unit: '块' },
+      ].flatMap((a) => {
+        const r = obj(stats[`${a.key}_reach`])
+        const reach15 = num(obj(r.counts)['15'])
+        const tot = num(r.total)
+        return [metric(a.label, reach15 != null ? formatInt(reach15) : null, `共 ${tot != null ? formatInt(tot) : '—'} ${a.unit}`)]
+      }).filter((m): m is StatMetric => m != null),
     ]
     return list.filter((m): m is StatMetric => m != null)
   }
@@ -721,6 +732,18 @@ function buildConclusion(module: AnalysisModuleResult): string | null {
         ? `研究范围内 ${formatInt(crTot)} 个商业点中，${formatNumber(Math.round((sum15 / crTot) * 1000) / 10)}%（${formatInt(sum15)} 个）在 15 分钟地铁步行可达内`
         : null,
     )
+    // 可达 × 多类资产：公共服务/文化设施/绿地 ≤15 可及（默认四类 + overlay_layers）
+    const assetClauses: string[] = []
+    for (const key of ['public', 'culture', 'green'] as const) {
+      const r = obj(stats[`${key}_reach`])
+      const tot = num(r.total)
+      const cls = num(obj(r.counts)['15'])
+      if (tot != null && cls != null) {
+        const label = key === 'public' ? '公共服务' : key === 'culture' ? '文化设施' : '绿地'
+        assetClauses.push(`${label} ${formatInt(cls)} 个${key === 'green' ? '地块' : ''}（共 ${formatInt(tot)}）`)
+      }
+    }
+    if (assetClauses.length) push(`≤15 分钟可及${assetClauses.join('、')}`)
   }
   const text = clause.join('；').replace(/；（/g, '（').trim()
   return text ? `${text}。` : null
@@ -961,6 +984,53 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
       }))
     if (catRows.length) {
       groups.push({ title: '≤15 分钟可及商业（分类）', rows: catRows })
+    }
+    // 可达 × 多类资产：公共服务/文化/绿地/任意指定图层 按 reach_class 分档图例
+    const ASSET_META: Record<string, { label: string; color: Record<string, string>; unit: string }> = {
+      public: { label: '公共服务', color: { '5': '#166534', '10': '#16a34a', '15': '#86efac', out: '#9ca3af' }, unit: '个' },
+      culture: { label: '文化设施', color: { '5': '#4c1d95', '10': '#7c3aed', '15': '#c4b5fd', out: '#9ca3af' }, unit: '个' },
+      green: { label: '绿地', color: { '5': '#14532d', '10': '#22c55e', '15': '#bbf7d0', out: '#9ca3af' }, unit: '块' },
+    }
+    for (const key of ['public', 'culture', 'green'] as const) {
+      const r = obj(stats[`${key}_reach`])
+      const meta = ASSET_META[key]
+      const c = obj(r.counts)
+      const tot = num(r.total)
+      if (tot == null) continue
+      const rowsA: LegendRow[] = ['5', '10', '15', 'out'].map((m) => ({
+        code: m,
+        label: m === 'out' ? '>15 分钟外' : `≤${m} 分钟`,
+        color: meta.color[m],
+        cells: null,
+        areaKm2: null,
+        points: num(c[m]),
+      }))
+      groups.push({
+        title: `${meta.label} · 地铁步行可达`,
+        rows: rowsA,
+        note: `共 ${formatInt(tot)} ${meta.unit}；计数=点位/地块，非容量或可达水平`,
+      })
+    }
+    // agent 指定任意图层叠加（overlay_*）
+    const overlayKeys = Object.keys(stats).filter((k) => k.startsWith('overlay_') && k.endsWith('_reach'))
+    for (const k of overlayKeys) {
+      const r = obj(stats[k])
+      const c = obj(r.counts)
+      const tot = num(r.total)
+      if (tot == null) continue
+      const rowsO: LegendRow[] = ['5', '10', '15', 'out'].map((m) => ({
+        code: m,
+        label: m === 'out' ? '>15 分钟外' : `≤${m} 分钟`,
+        color: ASSET_META.public.color[m],
+        cells: null,
+        areaKm2: null,
+        points: num(c[m]),
+      }))
+      groups.push({
+        title: `${str(r.label) || '指定图层'} · 地铁步行可达`,
+        rows: rowsO,
+        note: `共 ${formatInt(tot)} 个要素；agent 指定叠加图层`,
+      })
     }
     return groups
   }
@@ -1346,6 +1416,34 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
           note: '累计占研究范围内分类商业点；区外=地铁 15 分钟步行不可达',
         })
       }
+    }
+    // 可达 × 多类资产：各分钟档 × 资产类型 柱状（公共/文化/绿地/指定层）
+    const ASSET_KEYS: Array<{ key: string; label: string; unit: string }> = [
+      { key: 'public', label: '公共服务', unit: '个' },
+      { key: 'culture', label: '文化设施', unit: '个' },
+      { key: 'green', label: '绿地', unit: '块' },
+    ]
+    const assetBars: ChartBar[] = []
+    for (const a of ASSET_KEYS) {
+      const r = obj(stats[`${a.key}_reach`])
+      const c = obj(r.counts)
+      const tot = num(r.total)
+      const reach15 = num(c['15'])
+      if (tot != null && reach15 != null) assetBars.push({ label: `${a.label} ≤15m`, value: reach15, unit: a.unit })
+    }
+    const overlayKeys2 = Object.keys(stats).filter((k) => k.startsWith('overlay_') && k.endsWith('_reach'))
+    for (const k of overlayKeys2) {
+      const c = obj(obj(stats[k]).counts)
+      const reach15 = num(c['15'])
+      const lab = str(obj(stats[k]).label) || '指定图层'
+      if (reach15 != null) assetBars.push({ label: `${lab} ≤15m`, value: reach15, unit: '个' })
+    }
+    if (assetBars.length) {
+      out.push({
+        title: '各资产 ≤15 分钟可及数',
+        bars: assetBars,
+        note: '公共服务/文化设施=点位（四域/文化口径），绿地=地块（Layer 含绿地）；非容量或可达水平',
+      })
     }
     return out
   }

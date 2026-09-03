@@ -62,6 +62,23 @@
       "population_grid_path": {
         "type": "string",
         "description": "A1 轨道服务盲区：人口·就业 100m 格 geojson（home_count/work_count，EPSG:4326）；默认 apps/api/app/workspace/data/layers/population_workforce_profile_100m.json"
+      },
+      "public_poi_path": {
+        "type": "string",
+        "description": "公共服务设施叠加点源（POI 主表，四域纳入清单）；默认 ../04-乐活大道GIS数据/00-原始数据/POI全量/深圳市2024POI.csv；agent 可从数据目录/已注册图层发现后传入覆盖"
+      },
+      "culture_path": {
+        "type": "string",
+        "description": "文化设施叠加点源（文化资源 shp，排除经营培训）；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/文化资源/文化资源Export_Output_46.shp；agent 可发现后覆盖"
+      },
+      "green_land_path": {
+        "type": "string",
+        "description": "绿地叠加地块源（用地 shp，Layer 含『绿地』）；默认 ../04-乐活大道GIS数据/04-恢复数据/商业文化部分（发兆杨）1(全量用地).mpk解包/commondata/数据处理/用地地块_范围内Export_Output.shp；agent 可发现后覆盖"
+      },
+      "overlay_layers": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "【可延伸任意 POI/AOI】指定已注册图层 id 列表，逐个作为可达叠加（读其在 data/layers/<id>.json 的 EPSG:4326 几何，点/面均可）；列出候选可用 _list_overlay_candidates 或直接从当前数据目录/已启用图层挑选"
       }
     },
     "required": []
