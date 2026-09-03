@@ -995,9 +995,13 @@ def _attach_layer_asset(
 
 
 def _attach_asset_reach(stats: dict, geojson_by_id: dict, repo_root: Path, workspace: Path, params: dict) -> bool:
-    """可达 × 多类资产（默认公共/文化/绿地 + agent 指定 overlay_layers）。
+    """可达 × 任意资产（默认叠加全部可叠数据层；overlay_types 聚焦到特定类型）。
 
-    商业走既有 _attach_commercial_reach（stats.commercial_reach / rail_poi_reach_study 不动，向后兼容）。
+    - 商业走既有 _attach_commercial_reach（stats.commercial_reach / rail_poi_reach_study 不动，向后兼容）。
+    - 默认：叠加「默认四类源（公共/文化/绿地） + 全部已物化数据点/面图层」（见 _list_overlay_candidates，
+      排除 rail 自身输出与网格产品）。
+    - params.overlay_types（列表，如 ['green'] 或 ['public','green'] 或 ['layer:xxx']）：聚焦，只叠命中类型。
+    - params.overlay_layers：额外追加指定图层（不随 focus 收窄）。
     只加不拆：单资产缺失/失败不阻断主结果；本地读文件/图层，不入 Mapbox 指纹。
     """
     try:
@@ -1019,8 +1023,27 @@ def _attach_asset_reach(stats: dict, geojson_by_id: dict, repo_root: Path, works
         if not mins:
             return False
 
+        focus = [str(t) for t in (params.get("overlay_types") or []) if str(t).strip()]
+
+        # 默认源（公共/文化/绿地）：focus 为空 → 全叠；有 → 只叠命中类型
         for key, label, layer_id in DEFAULT_OVERLAY_ASSETS:
+            if focus and key not in focus:
+                continue
             _attach_one_asset(stats, geojson_by_id, repo_root, params, key, label, layer_id, boundary_m, cum, mins)
+
+        # 已物化数据点/面图层（任意 layer）：focus 为空 → 全叠；有 → 只叠 'layer:<id>' 命中项
+        candidates = _list_overlay_candidates(repo_root, workspace)
+        for cand in candidates:
+            if cand.get("source") != "layer":
+                continue
+            lid = cand.get("layer_id")
+            if not lid:
+                continue
+            if focus and f"layer:{lid}" not in focus:
+                continue
+            _attach_layer_asset(stats, geojson_by_id, workspace, str(lid), boundary_m, cum, mins)
+
+        # 显式追加指定图层（不随 focus 收窄）
         for layer_id in params.get("overlay_layers") or []:
             if isinstance(layer_id, str) and layer_id.strip():
                 _attach_layer_asset(stats, geojson_by_id, workspace, str(layer_id).strip(), boundary_m, cum, mins)
@@ -1030,12 +1053,16 @@ def _attach_asset_reach(stats: dict, geojson_by_id: dict, repo_root: Path, works
 
 
 def _list_overlay_candidates(repo_root: Path, workspace: Path) -> list[dict[str, Any]]:
-    """枚举当前「可叠加」的资产：默认四类源 + 已物化的点/面图层（EPSG:4326）。
+    """枚举当前「可叠加」的资产：默认源（公共/文化/绿地）+ 已物化的数据点/面图层（EPSG:4326）。
 
     基于已链接/已注册的索引（data/layers 物化清单），不做全盘扫盘——高效、可交给 agent 挑选后经
-    overlay_layers / *_path 参数传入。返回 [_candidates]，每项含 name/type/geometry/source/layer_id 或 path。
+    overlay_layers / *_path 参数传入。默认（focus 空）会把这些都叠一遍。
+    排除「非叠加」层：rail 自身输出（rail_*）、分析网格产品（*_100m/*_500m）、以及生成于前一轮
+    可达叠加的输出层（rail_overlay_*）——避免把可达带/网格/自身输出当输入。
     """
-    from app.gis import overlay_poi as _op
+    import re as _re
+
+    _EXCLUDE_ID = _re.compile(r"(^rail_|_100m$|_500m$|rail_overlay_)")
 
     out: list[dict[str, Any]] = []
     for key, label, layer_id in DEFAULT_OVERLAY_ASSETS:
@@ -1047,6 +1074,8 @@ def _list_overlay_candidates(repo_root: Path, workspace: Path) -> list[dict[str,
             if f.name.endswith(".meta.json"):
                 continue
             lid = f.stem
+            if _EXCLUDE_ID.search(lid):
+                continue
             if len(out) > 80:  # 防爆量
                 break
             try:

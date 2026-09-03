@@ -133,12 +133,17 @@ _POPULATION_TERMS = (
 )
 _COMPREHENSIVE_TERMS = (
     "综合现状", "全面现状", "项目综合", "项目全面", "整体分析", "全部现状", "现状分析",
+    # 0904 补口语：评委口头「全面分析一下」类（未加裸「全面」，防误抢单板块问法）
+    "全面分析一下",
     "项目现状", "现有数据能做什么",
     "当前数据能做什么", "能做什么", "请根据当前已有数据，对项目各方面进行一次尽可能完整的现状分析。",
 )
 _PUBLIC_SERVICE_TERMS = (
     "公共服务", "公共设施", "科教文化", "教育设施", "医疗设施", "体育设施",
     "便民设施", "应急设施", "教育", "医疗", "体育", "便民", "应急",
+    # 0904 补口语：评委口头「学校和医院」「学校怎么样」类问法也进公服（不加「商业」周边句防护，
+    # 已知副作用：含「学校+商业」的句子会先进公服——见演示准备包 P1-3 说明）
+    "学校", "医院",
 )
 _RAIL_ACCESSIBILITY_TERMS = (
     "地铁", "轨交", "轨道交通", "出入口", "等时圈", "步行可达", "步行", "可达",
@@ -169,6 +174,25 @@ _THEME_RAIL_PRECISE = _RAIL_NETWORK_TERMS + ("等时圈", "出入口", "步行�
 
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
+
+
+def _rail_overlay_focus(question: str | None) -> list[str] | None:
+    """从问句里判断「地铁可达 × 特定资产」的聚焦类型；未提到任何资产返回 None（默认全叠）。
+
+    优先级：明确提到绿地/公共空间/公园 → 聚焦 green；提到文化 → culture；提到公共服务/设施 → public；
+    多个都提到 → 各自列出（如 ['green','culture']）。只用于向 rail skill 注入 overlay_types，不改路由判定。
+    """
+    q = str(question or "")
+    if not q:
+        return None
+    focus: list[str] = []
+    if any(t in q for t in ("绿地", "公共空间", "公园", "广场", "绿廊")):
+        focus.append("green")
+    if any(t in q for t in ("文化", "文博", "博物馆", "图书馆", "美术馆")):
+        focus.append("culture")
+    if any(t in q for t in ("公共服务", "公共设施", "学校", "医院", "医疗", "体育设施", "便民")):
+        focus.append("public")
+    return focus or None
 
 
 def _theme_route(q: str) -> AnalysisRoute | None:
@@ -507,6 +531,7 @@ def execute_analysis_route(
     emit: Any | None = None,
     run_skill: SkillRunner | None = None,
     params_by_skill: dict[str, dict[str, Any]] | None = None,
+    question: str | None = None,
 ) -> ExecutionResult:
     """顺序执行独立板块；综合板块只在活动和商业前置都成功时运行。"""
     runner = run_skill or STORE.run
@@ -517,6 +542,10 @@ def execute_analysis_route(
     ]
     completed: set[str] = set()
     trace = [TraceEvent(type="text", content=f"{route.route_rule}：{route.route_reason}")]
+
+    # 语义聚焦：问句提到特定资产（绿地/公共空间/文化/设施）→ 只对 rail 模块注入 overlay_types，
+    # 让「地铁可达 × 绿地」这类问法聚焦到对应资产叠加，而非默认全叠。
+    rail_focus = _rail_overlay_focus(question)
 
     for module_id in route.executable_modules:
         spec = MODULE_SPECS[module_id]
@@ -538,6 +567,8 @@ def execute_analysis_route(
             continue
 
         params = dict(params_by_skill.get(spec.skill_id) or {})
+        if module_id == RAIL_NETWORK_MODULE and rail_focus:
+            params["overlay_types"] = rail_focus
         if emit is not None:
             emit(EventType.TOOL_START, {"tool": "execute_skill_script", "args": {"skill_id": spec.skill_id, "params": params}})
         try:
@@ -640,4 +671,4 @@ def try_execute_controlled_analysis(
     route = _route_from_intent(request.intent_id) or route_analysis_request(request.question)
     if route is None:
         return None
-    return execute_analysis_route(route, ctx=ctx, emit=emit)
+    return execute_analysis_route(route, ctx=ctx, emit=emit, question=request.question)
