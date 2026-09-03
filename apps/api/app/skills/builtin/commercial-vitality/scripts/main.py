@@ -495,16 +495,19 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
                 "crs": OUTPUT_CRS,
                 "fields": fields,
                 "style": {
-                    "mode": "graduated",
-                    "field": "day_vitality",
-                    "method": "quantile",
-                    "classes": 6,
-                    "palette": VITALITY_DENSITY_RAMP,
-                    "fillColor": "#eef2f7",
-                    "fillOpacity": 0.72,
+                    "mode": "categorized",
+                    "field": "supply_day_quadrant",
+                    "classes": [
+                        {"value": "S_L_V_H", "color": "#f59e0b", "label": "高活力·低供给（错配候选）"},
+                        {"value": "S_H_V_L", "color": "#3b82f6", "label": "低活力·高供给"},
+                        {"value": "S_H_V_H", "color": "#ef4444", "label": "高活力·高供给"},
+                        {"value": "S_L_V_L", "color": "#94a3b8", "label": "低活力·低供给"},
+                        {"value": "ND", "color": "#cbd5e1", "label": "无数据"},
+                    ],
+                    "fillOpacity": 0.7,
                     "strokeWidth": 0,
                 },
-                "description": "100m 全局锚定格网；昼间活力连续多档渐变（单色浅→深）；supply_day_quadrant/supply_night_quadrant/day_night_type 分类字段保留为辅助口径",
+                "description": "100m 全局锚定格网；昼间商业×活力四象限语义色（错配候选琥珀、低高蓝、高高红、低低灰、ND 浅灰）；supply_night_quadrant/day_night_type/连续活力字段保留为辅助口径",
             }
         ],
     }

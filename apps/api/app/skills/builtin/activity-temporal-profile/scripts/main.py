@@ -411,16 +411,19 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
                 "crs": OUTPUT_CRS,
                 "fields": fields,
                 "style": {
-                    "mode": "graduated",
-                    "field": "day_activity",
-                    "method": "quantile",
-                    "classes": 6,
-                    "palette": ACTIVITY_DENSITY_RAMP,
-                    "fillColor": "#eef2f7",
-                    "fillOpacity": 0.72,
+                    "mode": "categorized",
+                    "field": "day_night_type",
+                    "classes": [
+                        {"value": "D_H_N_L", "color": "#f59e0b", "label": "昼高夜低"},
+                        {"value": "D_L_N_H", "color": "#8b5cf6", "label": "昼低夜高"},
+                        {"value": "D_H_N_H", "color": "#ef4444", "label": "全天较高"},
+                        {"value": "D_L_N_L", "color": "#94a3b8", "label": "持续较低"},
+                        {"value": "ND", "color": "#cbd5e1", "label": "无数据"},
+                    ],
+                    "fillOpacity": 0.7,
                     "strokeWidth": 0,
                 },
-                "description": "100m 全局锚定格网；昼间活力连续多档渐变（单色浅→深），day_night_type 节律五类字段保留为辅助口径",
+                "description": "100m 全局锚定格网；昼夜节律五类语义色（昼高夜低橙=商务潮汐候选、昼低夜高紫=生活消费候选、全天较高红、持续较低灰、ND 浅灰）；昼/夜连续值字段保留为辅助口径",
             }
         ],
     }
