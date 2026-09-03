@@ -158,6 +158,19 @@ if cache_hits and f_pop.is_file() and land_real.is_file():
         check("A1 真实：覆盖率单调", real["coverage_pct"]["5"] < real["coverage_pct"]["10"] < real["coverage_pct"]["15"])
         check("A1 真实：盲区面积>0 且守恒容差", real["blind_km2"] > 0 and real["conservation"]["area_delta_pct"] < 0.5)
         check("A1 真实：盲区人口守恒", real["conservation"]["home_15_plus_blind"] == real["conservation"]["home_total"])
+
+        # 商业 POI × 地铁可达（真实数据，离线）：经 _attach_commercial_reach 同一条代码路径
+        stats_test: dict = {}
+        gj_test = _json.loads(_json.dumps(gj))  # 深拷贝，不改缓存
+        ok_cr = module._attach_commercial_reach(stats_test, gj_test, REPO_ROOT, {})
+        cr = stats_test.get("commercial_reach")
+        check("商业可达叠加可算", ok_cr and cr is not None and "rail_poi_reach_study" in gj_test)
+        if cr is not None:
+            cc = cr["counts"]
+            check("商业 reach_class 守恒 sum==total==61186", cr["total"] == 61186 and cc["5"] + cc["10"] + cc["15"] + cc["out"] == cr["total"])
+            check("商业 ≤15 累计与 out 精确", cc["5"] + cc["10"] + cc["15"] == 58378 and cc["out"] == 2808)
+            check("商业 pct 之和≈100", abs(sum(cr["pct"].values()) - 100.0) < 0.01)
+            check("商业 分类×档 守恒", sum(sum(v.values()) for v in cr["by_class_category"].values()) == cr["total"])
     else:
         print("SKIP A1 真实数据断言（rail 缓存 geojson 不完整）")
 else:

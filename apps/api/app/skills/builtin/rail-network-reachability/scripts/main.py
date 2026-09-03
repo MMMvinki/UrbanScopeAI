@@ -59,6 +59,11 @@ BLIND_POP_LAYER_ID = "rail_blindspot_population"
 DEFAULT_LAND_SHP = _ro.DEFAULT_LAND_SHP
 DEFAULT_POP_GEOJSON = _ro.DEFAULT_POP_GEOJSON
 
+# 商业 POI × 地铁可达：每个范围内商业点按 ≤5/≤10/≤15 并集求 reach_class（'out'=15 分钟外）
+POI_LAYER_ID = "rail_poi_reach_study"
+# 点色：≤5 深 → ≤15 浅，区外近底灰（浅底图上仍可辨；见 REACH_COLORS）
+REACH_COLORS = {"5": "#1e3a8a", "10": "#3b82f6", "15": "#93c5fd", "out": "#d1d5db"}
+
 
 class AnalysisInputError(ValueError):
     """输入/口径不满足本 Skill 契约。"""
@@ -483,6 +488,8 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
 
     # A1：居住用地 × 人口/就业 × 可达带/难达区 叠加（并入 stats + 两幅盲区图层）
     _attach_blindspot(stats, geojson_by_id, repo_root, params)
+    # 商业 POI × 地铁可达：reach_class 第 4 图层 rail_poi_reach_study + stats（只加不拆）
+    _attach_commercial_reach(stats, geojson_by_id, repo_root, params)
 
     evidence = _build_evidence(
         versions,
@@ -571,6 +578,7 @@ def _materialize_layers(workspace: Path, geojson_by_id: dict[str, dict]) -> list
         CLUSTERS_LAYER_ID: {"radius": 6, "fillColor": "#334155", "strokeColor": "#ffffff", "strokeWidth": 1},
         BLIND_RES_LAYER_ID: {"mode": "categorized", "field": "kind", "classes": [{"value": "residential_blindspot", "color": "#e11d48"}], "fillColor": "#e11d48", "fillOpacity": 0.5, "strokeColor": "#7f1d1d", "strokeWidth": 1},
         BLIND_POP_LAYER_ID: {"mode": "categorized", "field": "kind", "classes": [{"value": "population_blindspot", "color": "#f97316"}], "fillColor": "#f97316", "fillOpacity": 0.55, "strokeColor": "#9a3412", "strokeWidth": 1},
+        POI_LAYER_ID: {"mode": "categorized", "field": "reach_class", "classes": [{"value": v, "color": c} for v, c in REACH_COLORS.items()], "radius": 3, "fillColor": "#1e3a8a", "strokeColor": "#ffffff", "strokeWidth": 0.5, "fillOpacity": 0.85},
     }
     for layer_id, gj in geojson_by_id.items():
         path = layer_dir / f"{layer_id}.json"
@@ -609,6 +617,7 @@ def _layer_name(layer_id: str) -> str:
         CLUSTERS_LAYER_ID: "出入口簇（真实出入口代表）",
         BLIND_RES_LAYER_ID: "盲区居住地块（15 分钟步行外）",
         BLIND_POP_LAYER_ID: "盲区人口/就业格（15 分钟步行外）",
+        POI_LAYER_ID: "商业 POI · 地铁步行可达（5/10/15/外）",
     }.get(layer_id, layer_id)
 
 
@@ -679,6 +688,116 @@ def _attach_blindspot(stats: dict, geojson_by_id: dict, repo_root: Path, params:
         return False
 
 
+def _attach_commercial_reach(stats: dict, geojson_by_id: dict, repo_root: Path, params: dict) -> bool:
+    """商业 POI × 地铁可达：范围内每个商业点按 ≤5/≤10/≤15 并集求 reach_class（'out'=区外）。
+
+    只加不拆：不动可达带/守恒/既有 stats 键；新增第 4 图层 rail_poi_reach_study（EPSG:4326 点）
+    与 stats.commercial_reach。fresh 与缓存命中两路径都调（本地读商业文件，不入 Mapbox 指纹）。
+    """
+    try:
+        from shapely.geometry import mapping as _mapping
+        from shapely.geometry import shape
+
+        comm_default = (repo_root / DEFAULT_COMMERCIAL).resolve()
+        link_default = (repo_root / DEFAULT_COMMERCIAL_LINK).resolve()
+        if params.get("commercial_path") is not None:
+            comm_path = _resolve_path(repo_root, params["commercial_path"], DEFAULT_COMMERCIAL)
+        elif comm_default.is_file():
+            comm_path = comm_default
+        else:
+            comm_path = None
+        if params.get("commercial_link_path") is not None:
+            link_path = _resolve_path(repo_root, params["commercial_link_path"], DEFAULT_COMMERCIAL_LINK)
+        elif link_default.is_file():
+            link_path = link_default
+        else:
+            link_path = None
+        if comm_path is None or link_path is None:
+            return False
+
+        study_path = _resolve_path(repo_root, params.get("study_area_path"), DEFAULT_STUDY_AREA)
+        study_crs = _crs(params.get("study_area_crs", OUTPUT_CRS), "研究范围")
+        boundary_m, _area = load_study_boundary(study_path, study_crs)
+        bands = (geojson_by_id.get(BANDS_LAYER_ID) or {}).get("features") or []
+        band_geoms = [
+            (int(f["properties"]["minute"]), _ro.as_meters(shape(f["geometry"])))
+            for f in bands
+            if f.get("geometry") and f.get("properties", {}).get("minute") is not None
+        ]
+        if not band_geoms:
+            return False
+        cum = _ro.cum_geoms_from_bands(band_geoms, boundary_m)
+        mins = sorted(cum)
+        if not mins:
+            return False
+
+        comm4326 = load_commercial_in_range(comm_path, link_path, boundary_m)
+        if len(comm4326) == 0:
+            return False
+        comm_m = comm4326.to_crs(ANALYSIS_CRS)
+
+        # reach_class：取最小分钟并集（within），否则 out
+        idx = list(comm_m.index)
+        cls_map: dict[int, str] = {}
+        remaining = set(idx)
+        within_by_m: dict[int, list[int]] = {}
+        for m in mins:
+            within_ser = comm_m.geometry.within(cum[m])
+            hit = [ix for ix in remaining if bool(within_ser.loc[ix])]
+            for ix in hit:
+                cls_map[ix] = str(m)
+                remaining.discard(ix)
+            within_by_m[m] = hit
+        for ix in remaining:
+            cls_map[ix] = "out"
+        labels = [str(m) for m in mins] + ["out"]
+        counts = {lab: int(sum(1 for c in cls_map.values() if c == lab)) for lab in labels}
+        total = int(len(comm_m))
+        pct = {lab: round(counts[lab] / total * 100, 2) if total else 0.0 for lab in labels}
+        by_class_category: dict[str, dict[str, int]] = {}
+        for lab in labels:
+            sub = comm_m.loc[[ix for ix in idx if cls_map.get(ix) == lab]]
+            if len(sub) == 0:
+                continue
+            by_class_category[lab] = {str(k): int(v) for k, v in sub["category"].value_counts().items()}
+
+        stats["commercial_reach"] = {
+            "total": total,
+            "counts": counts,
+            "pct": pct,
+            "by_class_category": by_class_category,
+            "conservation": {
+                "reach15_cumulative": int(sum(counts[l] for l in (str(m) for m in mins))),
+                "out": counts["out"],
+                "sum": total,
+                "total": total,
+                "delta_pct": 0.0,
+            },
+        }
+
+        feats = []
+        for ix in idx:
+            pt = comm4326.loc[ix]
+            feats.append(
+                {
+                    "type": "Feature",
+                    "properties": {
+                        "objectid": str(pt["objectid"]),
+                        "name": str(pt["name"]),
+                        "category": str(pt["category"]),
+                        "reach_class": cls_map[ix],
+                    },
+                    "geometry": _mapping(pt.geometry),
+                }
+            )
+        geojson_by_id[POI_LAYER_ID] = {"type": "FeatureCollection", "features": feats}
+        return True
+    except AnalysisInputError:
+        raise
+    except Exception:  # noqa: BLE001 —— 商业可达叠加失败不阻断可达主结果
+        return False
+
+
 def _output(stats: dict[str, Any], evidence: dict[str, Any], materialized: list[dict], entrance_count: int, cluster_dist: int) -> dict[str, Any]:
     conserve = stats["conservation"]
     summary = (
@@ -706,6 +825,8 @@ def _output_from_cache(cached: dict, entrance_count: int, cache_file: Path, work
     geojson = cached.get("geojson") or {}
     # A1：缓存命中也补叠加（本地文件，快；不入 Mapbox 缓存指纹）
     _attach_blindspot(stats, geojson, repo_root, params)
+    # 商业 POI × 地铁可达：缓存命中同样补（本地读商业文件）
+    _attach_commercial_reach(stats, geojson, repo_root, params)
     # 迁移旧缓存：polygon 图层老数据为米制坐标，落盘前统一转 WGS84（前端按经纬度上图）
     from shapely.geometry import mapping as _mapping
     from shapely.geometry import shape as _shape

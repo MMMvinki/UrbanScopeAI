@@ -582,6 +582,14 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
     const rbPct = (m: string): number | null => num(obj(rb.coverage_pct)[m])
     const fmtAreaRate = (a: number | null, b: number | null): string | null =>
       a != null && b != null ? `${formatNumber(a)} km² · ${formatNumber(b)}%` : null
+    // 商业 POI × 地铁可达：reach_class 分档 counts/pct（后端 stats.commercial_reach，与原 cumulative 同源）
+    const cr = obj(stats.commercial_reach)
+    const crC = obj(cr.counts)
+    const c5 = num(crC['5'])
+    const c10 = num(crC['10'])
+    const c15 = num(crC['15'])
+    const cOut = num(crC['out'])
+    const crTot = num(cr.total)
     const list = [
       metric('研究范围', area != null ? formatArea(area) : null),
       metric('范围内出入口', num(ent.in_study_area) != null ? formatInt(num(ent.in_study_area) as number) : null, '全部真实出入口（1,159 个原始中落入研究范围）'),
@@ -596,7 +604,8 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
       metric('居住 ≤15 累计', fmtAreaRate(rbKm('15'), rbPct('15'))),
       metric('居住 · 难达(>15)', rb != null ? fmtAreaRate(num(rb.blind_km2), num(rb.blind_pct)) : null, '盲区居住面积 / 占居住面积'),
       metric('难达区人口/就业', num(rb.home_blind) != null && num(rb.work_blind) != null ? `${formatInt(num(rb.home_blind) as number)} / ${formatInt(num(rb.work_blind) as number)}` : null, '盲区内居住 / 就业人口'),
-      metric('商业点 15 分钟可及', num(obj(bands['15']).cumulative_count) != null ? formatInt(num(obj(bands['15']).cumulative_count) as number) : null, '研究范围内商业点在 15 分钟并集内'),
+      metric('商业可达 ≤5 / ≤10 / ≤15', c5 != null && c10 != null && c15 != null ? `${formatInt(c5)} / ${formatInt(c10)} / ${formatInt(c15)}` : null, '研究范围内商业点在各分钟并集内的 within 计数'),
+      metric('商业 区外(>15)', cOut != null && crTot != null && crTot > 0 ? `${formatInt(cOut)} 个 · ${formatNumber(Math.round((cOut / crTot) * 1000) / 10)}%` : null, '=地铁 15 分钟步行不可达'),
     ]
     return list.filter((m): m is StatMetric => m != null)
   }
@@ -699,6 +708,19 @@ function buildConclusion(module: AnalysisModuleResult): string | null {
     const bWork = num(rb.work_blind)
     push(bKm != null && bPct != null ? `其中盲区（>15 分钟）居住用地 ${formatNumber(bKm)} km²（占研究区内居住 ${formatNumber(bPct)}%）` : null)
     push(bHome != null && bWork != null ? `盲区仍含约 ${formatInt(bHome)} 居住人口 / ${formatInt(bWork)} 就业人口` : null)
+    // 商业 POI × 地铁可达：≤15 累计可达率
+    const cr = obj(stats.commercial_reach)
+    const crC = obj(cr.counts)
+    const crTot = num(cr.total)
+    const cx5 = num(crC['5'])
+    const cx10 = num(crC['10'])
+    const cx15 = num(crC['15'])
+    const sum15 = cx5 != null && cx10 != null && cx15 != null ? cx5 + cx10 + cx15 : null
+    push(
+      crTot != null && sum15 != null
+        ? `研究范围内 ${formatInt(crTot)} 个商业点中，${formatNumber(Math.round((sum15 / crTot) * 1000) / 10)}%（${formatInt(sum15)} 个）在 15 分钟地铁步行可达内`
+        : null,
+    )
   }
   const text = clause.join('；').replace(/；（/g, '（').trim()
   return text ? `${text}。` : null
@@ -1293,6 +1315,37 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
     if (num(rb.work_blind) != null) blindBars.push({ label: '就业人口', value: num(rb.work_blind) as number })
     if (blindBars.length) {
       out.push({ title: '盲区人口/就业', bars: blindBars, unit: '人', note: '15 分钟步行未覆盖区内的格点居住/就业人口（home_count/work_count）' })
+    }
+    // 商业 POI 地铁可达率（累计 %）
+    const crRate = obj(stats.commercial_reach)
+    const crRc = obj(crRate.counts)
+    const crRt = num(crRate.total)
+    const r5 = num(crRc['5'])
+    const r10 = num(crRc['10'])
+    const r15 = num(crRc['15'])
+    const rOut = num(crRc['out'])
+    if (crRt != null && crRt > 0) {
+      const mk = (n: number | null): number | null => (n == null ? null : Math.round((n / crRt) * 1000) / 10)
+      const sum2 = r5 != null && r10 != null ? r5 + r10 : null
+      const sum3 = r5 != null && r10 != null && r15 != null ? r5 + r10 + r15 : null
+      const rateItems: Array<{ label: string; value: number | null }> = [
+        { label: '≤5 分钟', value: mk(r5) },
+        { label: '≤10 分钟', value: mk(sum2) },
+        { label: '≤15 分钟', value: mk(sum3) },
+        { label: '区外>15', value: mk(rOut) },
+      ]
+      const rateBars: ChartBar[] = rateItems.reduce<ChartBar[]>((acc, it) => {
+        if (it.value != null) acc.push({ label: it.label, value: it.value })
+        return acc
+      }, [])
+      if (rateBars.length) {
+        out.push({
+          title: '商业点地铁可达率（%）',
+          bars: rateBars,
+          unit: '%',
+          note: '累计占研究范围内分类商业点；区外=地铁 15 分钟步行不可达',
+        })
+      }
     }
     return out
   }
