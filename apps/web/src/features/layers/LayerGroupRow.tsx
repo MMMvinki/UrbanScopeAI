@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Eye, EyeOff, GripVertical } from 'lucide-react'
 import type { DragEvent, KeyboardEvent, PointerEvent, ReactNode } from 'react'
 import type { LayerGroup } from './layerTypes'
@@ -55,8 +55,15 @@ export function LayerGroupRow({
   children,
 }: LayerGroupRowProps) {
   const renameGroup = useAppStore((s) => s.renameGroup)
-  // 组「当前可见」状态 = 组内全部图层可见；点眼睛据此反向翻转整组
-  const groupLayers = useAppStore((s) => s.layers.filter((l) => group.layerIds.includes(l.id)))
+  // 组「当前可见」状态 = 组内全部图层可见；点眼睛据此反向翻转整组。
+  // 注意：不要把 filter 放回 selector 里——每次调用都返回新数组引用，会触发
+  // useSyncExternalStore 的 getSnapshot 不稳定 → "Maximum update depth exceeded"
+  //（run 结束自动建分组后必现）。这里 selector 只取稳定的 layers 引用，用 useMemo 派生。
+  const allLayers = useAppStore((s) => s.layers)
+  const groupLayers = useMemo(
+    () => allLayers.filter((layer) => group.layerIds.includes(layer.id)),
+    [allLayers, group.layerIds],
+  )
   const allVisible =
     groupLayers.length > 0 && groupLayers.every((layer) => layer.visible)
 
