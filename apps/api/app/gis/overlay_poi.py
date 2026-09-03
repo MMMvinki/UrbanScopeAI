@@ -245,6 +245,34 @@ def load_green_land(shp_path: Path, study_boundary: base.BaseGeometry) -> gpd.Ge
     return result
 
 
+def load_land_parcels(shp_path: Path, study_boundary: base.BaseGeometry) -> gpd.GeoDataFrame:
+    """读用地地块 SHP → 全部地块 → 研究范围裁剪 → EPSG:4326 面。
+
+    与 ``load_green_land``（只 Layer 含「绿地」）不同——这里是**所有用地地块**，
+    每块带 Layer 分类（含居住 R、绿地 G、公服 GIC、商业 C 等），用于「每块用地属于几分钟可达层级」。
+    返回列：``layer``（用地类）、``geometry``、``area_km2``。
+    """
+    land = gpd.read_file(shp_path)
+    if "Layer" not in land.columns:
+        raise ValueError(f"用地数据缺少字段 Layer：{shp_path}")
+    # 过滤无几何 / 空面
+    land = land.loc[land.geometry.notna() & ~land.geometry.is_empty].copy()
+    land_m = land.to_crs(ANALYSIS_CRS)
+    inside = land_m.loc[land_m.geometry.intersects(study_boundary)].copy()
+    if inside.empty:
+        raise ValueError("研究范围内没有用地地块")
+    inside = inside.to_crs(OUTPUT_CRS)
+    result = gpd.GeoDataFrame(
+        {
+            "layer": inside["Layer"].astype(str).to_numpy(),
+            "area_km2": (inside.to_crs(ANALYSIS_CRS).geometry.area / 1_000_000).to_numpy().round(6),
+        },
+        geometry=inside.geometry.to_numpy(),
+        crs=OUTPUT_CRS,
+    )
+    return result
+
+
 def load_overlay_layer(geojson: dict) -> gpd.GeoDataFrame:
     """从任意已物化 GeoJSON（EPSG:4326）读几何，保留原 properties 供分类字段候选。
 

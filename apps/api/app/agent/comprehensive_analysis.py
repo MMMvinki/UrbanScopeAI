@@ -191,6 +191,8 @@ def _rail_overlay_focus(question: str | None) -> list[str] | None:
     if any(t in q for t in ("各种", "全部", "所有", "盘点", "各类", "所有设施", "各板块", "全部要素", "综合可达")):
         return None
     focus: list[str] = []
+    if any(t in q for t in ("用地", "地块", "土地", "土地利用")):
+        focus.append("land")
     if any(t in q for t in ("绿地", "公共空间", "公园", "广场", "绿廊")):
         focus.append("green")
     if any(t in q for t in ("文化", "文博", "博物馆", "图书馆", "美术馆")):

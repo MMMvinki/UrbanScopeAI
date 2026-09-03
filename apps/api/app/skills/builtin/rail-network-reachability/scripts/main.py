@@ -70,17 +70,20 @@ REACH_COLORS = {"5": "#993404", "10": "#d95f0e", "15": "#fe9929", "out": "#9ca3a
 PUBLIC_LAYER_ID = "rail_public_reach_study"
 CULTURE_LAYER_ID = "rail_culture_reach_study"
 GREEN_LAYER_ID = "rail_green_reach"
+LAND_LAYER_ID = "rail_land_reach"
 # 默认资产：key=逻辑名，label=中文（供图层/前端），color=分类色板（按 reach_class 用 REACH_COLORS）
 DEFAULT_OVERLAY_ASSETS: tuple[tuple[str, str, str], ...] = (
     ("public", "公共服务", PUBLIC_LAYER_ID),
     ("culture", "文化设施", CULTURE_LAYER_ID),
     ("green", "绿地", GREEN_LAYER_ID),
+    ("land", "用地", LAND_LAYER_ID),
 )
 # 资产叠加色板（按类）：不同资产用可区分的色系（与可达带蓝、商业暖区分开）
 ASSET_COLORS: dict[str, dict[str, str]] = {
     "public": {"5": "#166534", "10": "#16a34a", "15": "#86efac", "out": "#9ca3af"},
     "culture": {"5": "#4c1d95", "10": "#7c3aed", "15": "#c4b5fd", "out": "#9ca3af"},
     "green": {"5": "#14532d", "10": "#22c55e", "15": "#bbf7d0", "out": "#9ca3af"},
+    "land": {"5": "#78350f", "10": "#b45309", "15": "#fcd34d", "out": "#9ca3af"},
 }
 # 商业保持既有 key（commercial_reach），默认叠加从 public/culture/green 开始（商业另走 _attach_commercial_reach）
 DEFAULT_COMMERCIAL_ASSET = "commercial"
@@ -663,6 +666,7 @@ def _layer_name(layer_id: str) -> str:
         PUBLIC_LAYER_ID: "公共服务设施 · 地铁步行可达（5/10/15/外）",
         CULTURE_LAYER_ID: "文化设施 · 地铁步行可达（5/10/15/外）",
         GREEN_LAYER_ID: "绿地地块 · 地铁步行可达（5/10/15/外）",
+        LAND_LAYER_ID: "用地地块 · 地铁步行可达（5/10/15/外）",
     }.get(layer_id, layer_id)
 
 
@@ -870,8 +874,8 @@ def asset_reach_counts(probe_m: Any, cum: dict[int, Any], mins: list[int]) -> tu
 
 def _load_asset_gdf(key: str, repo_root: Path, params: dict, boundary_m: Any, _op: Any) -> gpd.GeoDataFrame | None:
     """按资产 key 从 params（优先）或仓库默认源读几何（EPSG:4326）；缺文件/失败返回 None（可选叠加跳过）。"""
-    param_key = {"public": "public_poi_path", "culture": "culture_path", "green": "green_land_path"}.get(key)
-    default = {"public": _op.DEFAULT_POI, "culture": _op.DEFAULT_CULTURE, "green": _op.DEFAULT_GREEN}.get(key)
+    param_key = {"public": "public_poi_path", "culture": "culture_path", "green": "green_land_path", "land": "land_use_path"}.get(key)
+    default = {"public": _op.DEFAULT_POI, "culture": _op.DEFAULT_CULTURE, "green": _op.DEFAULT_GREEN, "land": _op.DEFAULT_GREEN}.get(key)
     try:
         if params.get(param_key):
             path = _resolve_path(repo_root, params[param_key], default)
@@ -880,7 +884,12 @@ def _load_asset_gdf(key: str, repo_root: Path, params: dict, boundary_m: Any, _o
             if not cand.is_file():
                 return None
             path = cand
-        loader = {"public": _op.load_public_points, "culture": _op.load_culture_points, "green": _op.load_green_land}[key]
+        loader = {
+            "public": _op.load_public_points,
+            "culture": _op.load_culture_points,
+            "green": _op.load_green_land,
+            "land": _op.load_land_parcels,
+        }[key]
         return loader(path, boundary_m)
     except Exception:  # noqa: BLE001 —— 单资产缺文件/口径不满足 → 跳过该项叠加
         return None
@@ -1047,6 +1056,18 @@ def _attach_asset_reach(stats: dict, geojson_by_id: dict, repo_root: Path, works
         for layer_id in params.get("overlay_layers") or []:
             if isinstance(layer_id, str) and layer_id.strip():
                 _attach_layer_asset(stats, geojson_by_id, workspace, str(layer_id).strip(), boundary_m, cum, mins)
+
+        # focus 命中的资产层（供前端「只留一组」：保留 focus 指定资产，不各自全开）
+        # focus 空 = 全叠（None，前端全留）；focus=['commercial'] → 商业层；focus 含 public/culture/land 等 → 对应层
+        focus_layer_ids: list[str] = []
+        for key, _label, layer_id in DEFAULT_OVERLAY_ASSETS:
+            if not focus or key in focus:
+                focus_layer_ids.append(layer_id)
+        if focus:
+            focus_layer_ids = [lid for lid in focus_layer_ids if lid in geojson_by_id]
+        else:
+            focus_layer_ids = []
+        stats["focus_reach_layers"] = (focus_layer_ids or None) if focus else None
         return True
     except Exception:  # noqa: BLE001 —— 资产叠加失败不阻断可达主结果
         return False

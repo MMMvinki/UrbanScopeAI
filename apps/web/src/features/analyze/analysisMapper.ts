@@ -611,6 +611,7 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
         { label: '公共服务 ≤15 可及', key: 'public', unit: '个' },
         { label: '文化设施 ≤15 可及', key: 'culture', unit: '个' },
         { label: '绿地 ≤15 可及', key: 'green', unit: '块' },
+        { label: '用地 ≤15 可及', key: 'land', unit: '地块' },
       ].flatMap((a) => {
         const r = obj(stats[`${a.key}_reach`])
         const reach15 = num(obj(r.counts)['15'])
@@ -732,15 +733,15 @@ function buildConclusion(module: AnalysisModuleResult): string | null {
         ? `研究范围内 ${formatInt(crTot)} 个商业点中，${formatNumber(Math.round((sum15 / crTot) * 1000) / 10)}%（${formatInt(sum15)} 个）在 15 分钟地铁步行可达内`
         : null,
     )
-    // 可达 × 多类资产：公共服务/文化设施/绿地 ≤15 可及（默认四类 + overlay_layers）
+    // 可达 × 多类资产：公共服务/文化设施/绿地/用地 ≤15 可及（默认四类 + overlay_layers）
+    const ASSET_LABEL: Record<string, string> = { public: '公共服务', culture: '文化设施', green: '绿地', land: '用地' }
     const assetClauses: string[] = []
-    for (const key of ['public', 'culture', 'green'] as const) {
+    for (const key of ['public', 'culture', 'green', 'land'] as const) {
       const r = obj(stats[`${key}_reach`])
       const tot = num(r.total)
       const cls = num(obj(r.counts)['15'])
       if (tot != null && cls != null) {
-        const label = key === 'public' ? '公共服务' : key === 'culture' ? '文化设施' : '绿地'
-        assetClauses.push(`${label} ${formatInt(cls)} 个${key === 'green' ? '地块' : ''}（共 ${formatInt(tot)}）`)
+        assetClauses.push(`${ASSET_LABEL[key]} ${formatInt(cls)} 块（共 ${formatInt(tot)}）`)
       }
     }
     if (assetClauses.length) push(`≤15 分钟可及${assetClauses.join('、')}`)
@@ -990,8 +991,9 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
       public: { label: '公共服务', color: { '5': '#166534', '10': '#16a34a', '15': '#86efac', out: '#9ca3af' }, unit: '个' },
       culture: { label: '文化设施', color: { '5': '#4c1d95', '10': '#7c3aed', '15': '#c4b5fd', out: '#9ca3af' }, unit: '个' },
       green: { label: '绿地', color: { '5': '#14532d', '10': '#22c55e', '15': '#bbf7d0', out: '#9ca3af' }, unit: '块' },
+      land: { label: '用地', color: { '5': '#78350f', '10': '#b45309', '15': '#fcd34d', out: '#9ca3af' }, unit: '块' },
     }
-    for (const key of ['public', 'culture', 'green'] as const) {
+    for (const key of ['public', 'culture', 'green', 'land'] as const) {
       const r = obj(stats[`${key}_reach`])
       const meta = ASSET_META[key]
       const c = obj(r.counts)
@@ -1422,6 +1424,7 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
       { key: 'public', label: '公共服务', unit: '个' },
       { key: 'culture', label: '文化设施', unit: '个' },
       { key: 'green', label: '绿地', unit: '块' },
+      { key: 'land', label: '用地', unit: '块' },
     ]
     const assetBars: ChartBar[] = []
     for (const a of ASSET_KEYS) {

@@ -632,7 +632,14 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
           const lastGroup = moduleLayerSets[moduleLayerSets.length - 1]
           // rail 模块「只留一组」：公用可达带 + 唯一主资产层，其余资产层收起
           const isRail = completed[completed.length - 1]?.module_id === 'rail_network_reachability'
-          const keepIds = isRail ? railReachKeepIds(lastGroup) : lastGroup
+          if (isRail) {
+            const railMod = structured.modules.find((m) => m.module_id === 'rail_network_reachability')
+            const frl = (railMod?.stats as Record<string, unknown> | undefined)?.focus_reach_layers
+            lastRailFocusLayers = Array.isArray(frl) ? frl.map(String).filter(Boolean) : []
+          } else {
+            lastRailFocusLayers = []
+          }
+          const keepIds = isRail ? railReachKeepIds(lastGroup, lastRailFocusLayers) : lastGroup
           const store = useAppStore.getState()
           side.layers = applyLayerGroupVisibility(store.layers, keepIds)
           // 记住本次成果组，供 stream_end/收尾后再兜底一次（幂等，防 refresh 等异步重开）
@@ -795,6 +802,7 @@ function applyEvent(agentId: string, event: AgentEvent): void {
   if (event.type === 'run_start') {
     runGeneratedLayerIds = []
     lastRunKeepIds = []
+    lastRailFocusLayers = []
   }
   if (event.type === 'execution') runGeneratedLayerIds = []
 }
@@ -924,17 +932,31 @@ function isRailAssetLayer(layerId: string): boolean {
     layerId.startsWith('rail_public_reach') ||
     layerId.startsWith('rail_culture_reach') ||
     layerId.startsWith('rail_green_reach') ||
+    layerId.startsWith('rail_land_reach') ||
     layerId.startsWith('rail_overlay_')
   )
 }
 
 /** rail 模块「只留一组」：公用可达带 + 唯一主资产层可见，其余资产层收起。 */
-function railReachKeepIds(outputLayerIds: readonly string[]): string[] {
+/** rail 模块「只留一组」：公用可达带 + 保留的资产层可见，其余资产层收起。
+ *  focusLayers（可选）：后端 stats.focus_reach_layers —— 本次 focus 命中的资产层。
+ *  有 focusLayers → 保留这些（多资产问句如「公共+文化+用地」都显示）；
+ *  无 → 退回只留最后一个资产层（默认商业等单资产场景）。 */
+function railReachKeepIds(outputLayerIds: readonly string[], focusLayers?: readonly string[]): string[] {
   const base = outputLayerIds.filter((id) => RAIL_BASE_LAYER_IDS.includes(id))
   const assetLayers = outputLayerIds.filter((id) => isRailAssetLayer(id))
-  const keepAsset = assetLayers.length ? [assetLayers[assetLayers.length - 1]] : []
+  let keepAsset: string[]
+  if (focusLayers && focusLayers.length) {
+    keepAsset = assetLayers.filter((id) => focusLayers.includes(id))
+  } else {
+    keepAsset = assetLayers.length ? [assetLayers[assetLayers.length - 1]] : []
+  }
   return [...base, ...keepAsset]
 }
+
+/** 最近一次 rail 模块的 focus 资产层（来自 structured 模块 stats.focus_reach_layers），
+ *  railReachKeepIds 用之保留多资产 focus；跨 run 随 run_start 清空。 */
+let lastRailFocusLayers: string[] = []
 
 async function ensureVisibleGeojson(): Promise<void> {
   const { layers, geojsonTick } = useAppStore.getState()

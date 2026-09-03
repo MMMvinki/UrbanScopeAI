@@ -230,8 +230,8 @@ try:
             gj_a = _json.loads(_json.dumps(_cf.get("geojson") or {}))
             ok_a = module._attach_asset_reach(stats_a, gj_a, _real_root, API_ROOT / "app" / "workspace", {})
             check("资产叠加主路径可算", ok_a)
-            # 三类默认叠加 stats 齐
-            for key in ("public", "culture", "green"):
+            # 默认叠加 stats 齐（含用地全量地块）
+            for key in ("public", "culture", "green", "land"):
                 r = stats_a.get(f"{key}_reach")
                 check(f"{key}_reach 存在且计数>0", r is not None and r.get("total", 0) > 0, f"total={r.get('total') if r else None}")
             # overlay_layers：指定已注册图层（commercial_points_study）延伸叠加
@@ -239,6 +239,17 @@ try:
             gj_o = _json.loads(_json.dumps(_cf.get("geojson") or {}))
             ok_o = module._attach_asset_reach(stats_o, gj_o, _real_root, API_ROOT / "app" / "workspace", {"overlay_layers": ["commercial_points_study"]})
             check("overlay 指定图层可叠加", ok_o and any(k.startswith("overlay_") and k.endswith("_reach") for k in stats_o), f"keys={[k for k in stats_o if k.startswith('overlay_')]}")
+            # focus 多资产：公共+文化+用地 → focus_reach_layers 应含三层资产层（前端据此「只留一组」保留全部）
+            stats_f: dict = {}
+            gj_f = _json.loads(_json.dumps(_cf.get("geojson") or {}))
+            module._attach_asset_reach(stats_f, gj_f, _real_root, API_ROOT / "app" / "workspace", {"overlay_types": ["public", "culture", "land"]})
+            frl = stats_f.get("focus_reach_layers")
+            check(
+                "focus 多资产→focus_reach_layers 含 public/culture/land 层",
+                frl is not None and "rail_public_reach_study" in frl and "rail_culture_reach_study" in frl and "rail_land_reach" in frl,
+                f"frl={frl}",
+            )
+            check("focus=land 时 land_reach 存在", stats_f.get("land_reach") is not None and stats_f["land_reach"].get("total", 0) > 0)
             for key, lbl in (("public", "公共服务"), ("culture", "文化设施"), ("green", "绿地")):
                 r = stats_a.get(f"{key}_reach")
                 if r:
