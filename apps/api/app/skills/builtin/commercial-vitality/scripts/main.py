@@ -25,6 +25,10 @@ STUDY_AREA_ID = "candidate_lohas_study_area"
 DEFAULT_STUDY_AREA = "docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
 DEFAULT_COMMERCIAL = "../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源Export_Output_46.shp"
 DEFAULT_VITALITY = "../04-乐活大道GIS数据/00-原始数据/人口客流/研究范围人口数据全/客流分析/passenger_day_night_grid_avg_full_gcj02_to_wgs84.csv"
+# D2 视觉：主图层数值多档渐变（单色浅→深）；四象限/节律分类字段保留为辅助口径
+VITALITY_DENSITY_RAMP = [
+    "#fff1f2", "#ffe4e6", "#fecdd3", "#fda4af", "#fb7185", "#be123c",
+]
 TIME_FIELDS = {
     "all": ("all_day_09_18_avg", "all_night_19_22_avg"),
     "wd": ("wd_day_09_18_avg", "wd_night_19_22_avg"),
@@ -490,8 +494,17 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
                 "kind": "grid",
                 "crs": OUTPUT_CRS,
                 "fields": fields,
-                "style": {"mode": "categorized", "field": "supply_day_quadrant"},
-                "description": "100m 全局锚定格网；格心入区；商业正密度中位数与昼夜活力中位数四象限",
+                "style": {
+                    "mode": "graduated",
+                    "field": "day_vitality",
+                    "method": "quantile",
+                    "classes": 6,
+                    "palette": VITALITY_DENSITY_RAMP,
+                    "fillColor": "#eef2f7",
+                    "fillOpacity": 0.72,
+                    "strokeWidth": 0,
+                },
+                "description": "100m 全局锚定格网；昼间活力连续多档渐变（单色浅→深）；supply_day_quadrant/supply_night_quadrant/day_night_type 分类字段保留为辅助口径",
             }
         ],
     }

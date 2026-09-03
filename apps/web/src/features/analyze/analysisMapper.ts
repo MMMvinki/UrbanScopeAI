@@ -30,6 +30,13 @@ export interface LegendGroup {
   title: string
   rows: LegendRow[]
   note?: string
+  /** D2：连续渐变图例形态（单色浅→深档位）；有值时按渐变条渲染，两端取 minValue/maxValue */
+  gradient?: {
+    palette: string[]
+    minValue: number | null
+    maxValue: number | null
+    unit?: string
+  }
 }
 
 export interface FunnelStep {
@@ -244,6 +251,83 @@ function firstSentence(text: string): string {
   const cut = t.search(/[。！？]/)
   if (cut > 0) return `${t.slice(0, cut + 1)}`
   return t.length > 140 ? `${t.slice(0, 140)}…` : t
+}
+
+/* ---------------- density_bands（D2 渐变主图层同源图例/图表） ---------------- */
+
+/** 各模块「数值渐变主图层」的语义：标题 + 单位（读 stats.density_bands，与图层 applied 色带同源） */
+const DENSITY_META: Record<string, { title: string; unit?: string }> = {
+  commercial_supply: { title: '商业密度', unit: '个/km²' },
+  activity_temporal: { title: '昼间活力', unit: '值' },
+  commercial_vitality: { title: '昼间活力', unit: '值' },
+  population_profile: { title: '居住人口数', unit: '人' },
+}
+
+function fmtNum(n: number): string {
+  if (Number.isInteger(n)) return n.toLocaleString('en-US')
+  return String(Math.round(n * 100) / 100)
+}
+
+/** 渐变档位 → 图例组（梯度条 + 每档色块/格数；值与图层同源）。字段缺时返回 null。 */
+function densityLegendGroup(module: AnalysisModuleResult): LegendGroup | null {
+  const meta = DENSITY_META[module.module_id]
+  if (!meta) return null
+  const bands = obj(module.stats.density_bands)
+  const palette = Array.isArray(bands.palette) ? bands.palette.map(String) : []
+  const bandRows = Array.isArray(bands.bands) ? (bands.bands as unknown[]) : []
+  if (!palette.length || !bandRows.length) return null
+  const rows: LegendRow[] = bandRows.map((raw, i) => {
+    const band = obj(raw)
+    const from = num(band.from)
+    const to = num(band.to)
+    const lo = from != null ? fmtNum(from) : '…'
+    const hi = to != null ? fmtNum(to) : '…'
+    return {
+      code: `band${i}`,
+      label: `${lo} – ${hi}`,
+      color: palette[i] ?? '#9ca3af',
+      cells: num(band.count),
+      areaKm2: null,
+      points: null,
+    }
+  })
+  return {
+    title: meta.title,
+    rows,
+    note: '按分位数切档（浅→深，低档近底退让）；断点与图层色带同源',
+    gradient: {
+      palette,
+      minValue: num(bands.min),
+      maxValue: num(bands.max),
+      unit: meta.unit,
+    },
+  }
+}
+
+/** 渐变档位 → 右卡柱图（每档网格数）。字段缺时返回 null。 */
+function densityBandChart(module: AnalysisModuleResult): ChartGroup | null {
+  const meta = DENSITY_META[module.module_id]
+  if (!meta) return null
+  const bands = obj(module.stats.density_bands)
+  const bandRows = Array.isArray(bands.bands) ? (bands.bands as unknown[]) : []
+  if (!bandRows.length) return null
+  const bars: ChartBar[] = []
+  bandRows.forEach((raw, i) => {
+    const band = obj(raw)
+    const from = num(band.from)
+    const to = num(band.to)
+    const count = num(band.count)
+    if (count == null) return
+    const lo = from != null ? fmtNum(from) : '…'
+    const hi = to != null ? fmtNum(to) : '…'
+    bars.push({ label: `${i + 1} 档 ${lo}–${hi}`, value: count, unit: '格' })
+  })
+  if (!bars.length) return null
+  return {
+    title: `${meta.title} · 档位分布`,
+    bars,
+    note: '分位数档位（断点与图层色带同源）；格数=该档落入的网格数',
+  }
 }
 
 /* ---------------- 安全取值 ---------------- */
@@ -572,6 +656,8 @@ function quadrantRows(stats: Record<string, unknown>, key: string): LegendRow[] 
 function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
   const stats = module.stats
   if (module.module_id === 'activity_temporal') {
+    const grad = densityLegendGroup(module)
+    if (grad) return [grad]
     const types = obj(stats.day_night_types)
     const rows = RHYTHM_ORDER.map((code) => {
       const item = obj(types[code])
@@ -587,21 +673,24 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
     return [{ title: '昼夜节律五类', rows, note: '阈值以上为高、以下为低；缺活动数据为无数据（ND）' }]
   }
   if (module.module_id === 'commercial_supply') {
-    const classes = obj(stats.supply_classes)
-    const rows: LegendRow[] = (['high_supply', 'low_supply'] as const).map((key) => {
-      const item = obj(classes[key])
-      return {
-        code: key,
-        label: str(item.label) || (key === 'high_supply' ? '高供给' : '低供给'),
-        color: SUPPLY_COLORS[key],
-        cells: num(item.grid_count),
-        areaKm2: num(item.area_km2),
-        points: num(item.commercial_points),
-      }
-    })
-    const groups: LegendGroup[] = [
-      { title: '高低供给', rows, note: '正密度中位数以上为高供给、以下为低供给' },
-    ]
+    const grad = densityLegendGroup(module)
+    const groups: LegendGroup[] = grad ? [grad] : []
+    if (!grad) {
+      // 回退（旧后端无 density_bands）：仍按高/低二值给图例
+      const classes = obj(stats.supply_classes)
+      const rows: LegendRow[] = (['high_supply', 'low_supply'] as const).map((key) => {
+        const item = obj(classes[key])
+        return {
+          code: key,
+          label: str(item.label) || (key === 'high_supply' ? '高供给' : '低供给'),
+          color: SUPPLY_COLORS[key],
+          cells: num(item.grid_count),
+          areaKm2: num(item.area_km2),
+          points: num(item.commercial_points),
+        }
+      })
+      groups.push({ title: '高低供给', rows, note: '正密度中位数以上为高供给、以下为低供给' })
+    }
     const breakdown = Array.isArray(stats.category_breakdown) ? stats.category_breakdown : []
     const catRows: LegendRow[] = breakdown
       .filter((r) => (num(obj(r).count) ?? 0) > 0)
@@ -622,6 +711,8 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
     return groups
   }
   if (module.module_id === 'commercial_vitality') {
+    const grad = densityLegendGroup(module)
+    if (grad) return [grad]
     return [
       { title: '昼间 商业供给 × 活力', rows: quadrantRows(stats, 'supply_day_quadrants') },
       { title: '夜间 商业供给 × 活力', rows: quadrantRows(stats, 'supply_night_quadrants') },
@@ -677,6 +768,8 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
     ]
   }
   if (module.module_id === 'population_profile') {
+    const grad = densityLegendGroup(module)
+    if (grad) return [grad]
     const groups = obj(stats.groups)
     const rows: LegendRow[] = (['youth', 'high_edu', 'mid_high_income'] as const).map((key) => {
       const item = obj(groups[key])
@@ -874,6 +967,8 @@ const FACILITY_GROUP_LABELS: Record<string, string> = {
 function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
   const stats = module.stats
   if (module.module_id === 'activity_temporal') {
+    const density = densityBandChart(module)
+    if (density) return [density]
     const types = obj(stats.day_night_types)
     const bars = RHYTHM_ORDER.map((code) => ({
       label: str(obj(types[code]).label) || RHYTHM_LABELS[code],
@@ -882,14 +977,18 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
     return [{ title: '昼夜节律 · 网格数', bars, note: '阈值以上为高、以下为低；无数据（ND）单独一列' }]
   }
   if (module.module_id === 'commercial_supply') {
-    const classes = obj(stats.supply_classes)
-    const bars = (['high_supply', 'low_supply'] as const).map((key) => ({
-      label: str(obj(classes[key]).label) || (key === 'high_supply' ? '高供给' : '低供给'),
-      value: num(obj(classes[key]).grid_count),
-    })).filter((b): b is ChartBar => b.value != null)
-    const out: ChartGroup[] = [
-      { title: '商业供给 · 格数', bars, note: '正密度中位数以上为高供给、以下为低供给' },
-    ]
+    const out: ChartGroup[] = []
+    const density = densityBandChart(module)
+    if (density) {
+      out.push(density)
+    } else {
+      const classes = obj(stats.supply_classes)
+      const bars = (['high_supply', 'low_supply'] as const).map((key) => ({
+        label: str(obj(classes[key]).label) || (key === 'high_supply' ? '高供给' : '低供给'),
+        value: num(obj(classes[key]).grid_count),
+      })).filter((b): b is ChartBar => b.value != null)
+      out.push({ title: '商业供给 · 格数', bars, note: '正密度中位数以上为高供给、以下为低供给' })
+    }
     const breakdown = Array.isArray(stats.category_breakdown) ? stats.category_breakdown : []
     const catBars: ChartBar[] = breakdown
       .filter((r) => (num(obj(r).count) ?? 0) > 0)
@@ -900,6 +999,8 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
     return out
   }
   if (module.module_id === 'commercial_vitality') {
+    const density = densityBandChart(module)
+    if (density) return [density]
     return (['supply_day_quadrants', 'supply_night_quadrants'] as const)
       .map((key, i) => {
         const table = obj(stats[key])
@@ -930,6 +1031,8 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
   if (module.module_id === 'population_profile') {
     const groups = obj(stats.groups)
     const out: ChartGroup[] = []
+    const density = densityBandChart(module)
+    if (density) out.push(density)
     const groupBars: ChartBar[] = []
     for (const code of ['youth', 'high_edu', 'mid_high_income'] as const) {
       const p = num(obj(groups[code]).proportion)

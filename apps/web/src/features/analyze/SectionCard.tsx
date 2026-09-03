@@ -156,6 +156,7 @@ function ReadinessMatrix({ section }: { section: AnalysisSection }) {
  */
 export function SectionCard({ section }: { section: AnalysisSection }) {
   const showAnalysisLayerGroup = useAppStore((s) => s.showAnalysisLayerGroup)
+  const setAnalysisMapModule = useAppStore((s) => s.setAnalysisMapModule)
   const setActiveNav = useAppStore((s) => s.setActiveNav)
 
   const viewOnMap = () => {
@@ -169,6 +170,8 @@ export function SectionCard({ section }: { section: AnalysisSection }) {
           : []
     if (!groupIds.length) return
     showAnalysisLayerGroup(groupIds, section.outputLayer ?? groupIds[0])
+    // 图上图例跟随该模块
+    setAnalysisMapModule(section.id)
     setActiveNav('data')
   }
 

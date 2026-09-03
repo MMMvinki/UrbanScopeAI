@@ -24,6 +24,10 @@ GRID_VERSION = "grid_v1_100m_epsg32650"
 STUDY_AREA_ID = "candidate_lohas_study_area"
 DEFAULT_STUDY_AREA = "docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
 DEFAULT_VITALITY = "../04-乐活大道GIS数据/00-原始数据/人口客流/研究范围人口数据全/客流分析/passenger_day_night_grid_avg_full_gcj02_to_wgs84.csv"
+# D2 视觉：主图层数值多档渐变（单色浅→深），节律五类字段保留为辅助口径
+ACTIVITY_DENSITY_RAMP = [
+    "#ecfeff", "#cffafe", "#a5f3fc", "#67e8f9", "#22d3ee", "#0e7490",
+]
 TIME_FIELDS = {
     "all": ("all_day_09_18_avg", "all_night_19_22_avg"),
     "wd": ("wd_day_09_18_avg", "wd_night_19_22_avg"),
@@ -406,8 +410,17 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
                 "kind": "grid",
                 "crs": OUTPUT_CRS,
                 "fields": fields,
-                "style": {"mode": "categorized", "field": "day_night_type"},
-                "description": "100m 全局锚定格网；格心入区；昼/夜活动中位数分型（昼高夜低/昼低夜高/全天较高/持续较低/无数据）",
+                "style": {
+                    "mode": "graduated",
+                    "field": "day_activity",
+                    "method": "quantile",
+                    "classes": 6,
+                    "palette": ACTIVITY_DENSITY_RAMP,
+                    "fillColor": "#eef2f7",
+                    "fillOpacity": 0.72,
+                    "strokeWidth": 0,
+                },
+                "description": "100m 全局锚定格网；昼间活力连续多档渐变（单色浅→深），day_night_type 节律五类字段保留为辅助口径",
             }
         ],
     }

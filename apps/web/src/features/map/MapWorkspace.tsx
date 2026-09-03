@@ -20,6 +20,7 @@ import {
 } from './mapLayers'
 import { buildDeckLayers } from './deckLayers'
 import { MapSchematic } from './MapSchematic'
+import { MapLegendOverlay } from './MapLegendOverlay'
 import { TerraDrawController, geometryTypeFromFeatures } from './DrawController'
 import type { DrawMode } from './DrawController'
 import type { AutoUnitConfig } from './geodesic'
@@ -788,6 +789,8 @@ export function MapWorkspace() {
             </div>
           </div>
         )}
+        {/* 图上图例：展示当前分析模块（默认最近完成板块）的同源图例，右下角可收起 */}
+        <MapLegendOverlay />
       </div>
     </section>
   )

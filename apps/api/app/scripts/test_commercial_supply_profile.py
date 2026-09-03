@@ -128,6 +128,17 @@ check("结果图层已注册", layer is not None and layer.feature_count == grid
 check("结果图层 CRS 元数据正确", layer is not None and layer.crs == "EPSG:4326")
 # 网格成果语义标记（D5-A）：分析网格层 kind=grid，UI 标签「栅格/网格」，仍按矢量取几何
 check("网格图层语义 kind=grid", layer is not None and layer.kind == "grid")
+# D2 渐变主图层：stats.density_bands 与图层 applied 色带同源（右卡档位图/图上渐变图例消费）
+db = stats.get("density_bands") or {}
+check(
+    "density_bands 与单色渐变同源",
+    db.get("field") == "commercial_density_km2"
+    and db.get("classes") == 6
+    and db.get("palette") == [
+        "#fff7ed", "#ffedd5", "#fed7aa", "#fdba74", "#f97316", "#c2410c",
+    ]
+    and sum(int(b.get("count", 0)) for b in db.get("bands", [])) == grid_count,
+)
 layer_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "commercial_supply_profile_100m.json"
 geojson = json.loads(layer_path.read_text(encoding="utf-8"))
 check("GeoJSON 要素数与统计一致", len(geojson.get("features") or []) == grid_count)

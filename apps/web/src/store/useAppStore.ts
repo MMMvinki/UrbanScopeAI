@@ -599,6 +599,8 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
       )
       if (structured) {
         side.lastComprehensiveAnalysis = structured
+        // 图上图例跟随新 run：先回到默认（最近完成板块），用户点某模块卡后跟它走
+        side.analysisMapModuleId = null
         // 图层收尾纪律（D1-A）：本 run 完成的每个模块都带 outputLayerIds（主图层 + 辅助层）。
         // 只默认打开「最后一个完成的板块」的完整成果组；本 run 其他模块的历史生成层
         // （含上次 run 的 *_profile_* / subway_entrance_study 等中间层）显式收起，
@@ -834,6 +836,8 @@ interface AppState {
   resultGroups: ResultGroup[]
   /** 最近一次综合分析的结构化结果（后端 structured_analysis）；板面「分析」页消费，非综合分析保持旧值 */
   lastComprehensiveAnalysis: StructuredAnalysisResult | null
+  /** 当前在数据地图上展示图例的分析模块 id（图上图例浮层消费）；null=默认最近完成板块 */
+  analysisMapModuleId: string | null
   /** 成果面板高亮定位的目标分组 id（点击对话「成果产物」chip 写入，面板滚动定位后自动清除） */
   highlightGroupId: string | null
   /** 图层本地样式（按 layerId，session 级；Sprint 2 随 P3 升级后端持久化） */
@@ -901,6 +905,8 @@ interface AppState {
   showOnlyLayer: (id: string) => void
   /** 图层收尾纪律：把生成图层收敛到某个成果组（keepIds），其余生成图层收起；focusId 存在时定位到它 */
   showAnalysisLayerGroup: (ids: string[], focusId?: string) => void
+  /** 记录「在地图上查看」对应的分析模块 id（图上图例跟随）；null=默认最近完成板块 */
+  setAnalysisMapModule: (id: string | null) => void
   /** 彻底删除图层（后端清磁盘物化文件 + 项目 manifest）；成功后前端清理，失败抛错 */
   removeLayer: (id: string) => Promise<void>
   /** Agent 生成图层事件到达时立即并入 store（无需等整个 run 结束），真实几何上屏 */
@@ -986,6 +992,7 @@ export const useAppStore = create<AppState>((set) => ({
   tools: [],
   resultGroups: [],
   lastComprehensiveAnalysis: null,
+  analysisMapModuleId: null,
   highlightGroupId: null,
   layerStyles: {},
   geojsonTick: 0,
@@ -1428,6 +1435,7 @@ export const useAppStore = create<AppState>((set) => ({
     // 定位到主图层（成果卡点击时）：生成图层几乎都已在本 run 中加载，focusLayer 兜底 lazy 取几何
     if (focusId) void useAppStore.getState().focusLayer(focusId)
   },
+  setAnalysisMapModule: (id) => set({ analysisMapModuleId: id }),
   removeLayer: async (id) => {
     // 后端彻底删除（同步清磁盘物化文件 + 项目 manifest，跨重启不复活），成功才清理前端。
     // 平台数据只读图层后端返回 400 → 这里抛错由调用方（LayerPanel）alert。

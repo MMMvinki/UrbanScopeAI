@@ -1,5 +1,5 @@
 import type { LegendGroup } from './analysisMapper'
-import { formatArea, formatInt } from './analysisMapper'
+import { formatArea, formatInt, formatNumber } from './analysisMapper'
 
 /**
  * 分析板块图例：读 mapper 输出的分型数据，画「色块 + 分类名 + 格数 + 面积 + 商业点数」表。
@@ -14,6 +14,38 @@ export function AnalysisLegend({ groups }: { groups: LegendGroup[] }) {
       {groups.map((group) => (
         <div className="analysis-legend__group" key={group.title}>
           <div className="analysis-legend__title">{group.title}</div>
+          {group.gradient ? (
+            <div style={{ padding: '2px 0 4px' }}>
+              <div
+                style={{
+                  height: 8,
+                  borderRadius: 4,
+                  background: `linear-gradient(to right, ${group.gradient.palette.join(',')})`,
+                }}
+                aria-hidden="true"
+              />
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  fontSize: 10,
+                  color: '#64748b',
+                  marginTop: 2,
+                }}
+              >
+                <span>
+                  {group.gradient.minValue != null
+                    ? `${formatNumber(group.gradient.minValue)}${group.gradient.unit ?? ''}`
+                    : ''}
+                </span>
+                <span>
+                  {group.gradient.maxValue != null
+                    ? `${formatNumber(group.gradient.maxValue)}${group.gradient.unit ?? ''}`
+                    : ''}
+                </span>
+              </div>
+            </div>
+          ) : null}
           <table className="analysis-legend__table">
             <thead>
               <tr>

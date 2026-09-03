@@ -32,6 +32,11 @@ DEFAULT_STUDY_AREA = "docs/workstreams/analysis-foundation/data/candidate_lohas_
 DEFAULT_COMMERCIAL = "../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源Export_Output_46.shp"
 DEFAULT_COMMERCIAL_LINK = "../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源_商业中小类_连接表_utf8.csv"
 POI_LAYER_ID = "commercial_points_study"
+# D2 视觉：主图层从「高/低二值」升级为连续密度多档渐变（单色浅→深），H/L 分类字段保留供辅助口径。
+# 与 store 端 apply_renderer_style 消费的 palette 同源；图上图例/右卡档位分布也读这份 stats。
+SUPPLY_DENSITY_RAMP = [
+    "#fff7ed", "#ffedd5", "#fed7aa", "#fdba74", "#f97316", "#c2410c",
+]
 
 
 class AnalysisInputError(ValueError):
@@ -394,8 +399,16 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             "kind": "grid",
             "crs": OUTPUT_CRS,
             "fields": fields,
-            "style": {"mode": "categorized", "field": "supply_level"},
-            "description": "100m 全局锚定格网；格心入区；isdelete=0 商业点计数与正密度中位数高低供给分型",
+            "style": {
+                "mode": "graduated",
+                "field": "commercial_density_km2",
+                "method": "quantile",
+                "classes": 6,
+                "palette": SUPPLY_DENSITY_RAMP,
+                "fillOpacity": 0.72,
+                "strokeWidth": 0,
+            },
+            "description": "100m 全局锚定格网；商业点密度连续多档渐变（单色浅→深），supply_level 高低供给字段保留为辅助口径",
         },
         {
             "layer_id": POI_LAYER_ID,

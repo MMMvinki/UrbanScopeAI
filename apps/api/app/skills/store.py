@@ -596,6 +596,10 @@ class SkillStore:
         self._bump_run(skill_id, op, success=success)
 
         registered_layers = [r for r in registered if r is not None]
+        if success:
+            # D2：给「数值渐变主图层」补一份档位分布进 stats（与图层实际 applied 的
+            # graduated palette/breaks 同源），前端右卡密度档位图与图上渐变图例消费同一份数字。
+            self._attach_density_bands(output, registered_layers)
         return {
             "success": success,
             "skill_id": skill_id,
@@ -736,6 +740,8 @@ class SkillStore:
                         style["field"],
                         method=str(style.get("method") or "quantile"),
                         classes=int(style.get("classes") or 5),
+                        # D2：透传单色浅→深渐变（resolve_ramp 超档不插值，skill 必须给足量色）
+                        palette=style.get("palette"),
                     )
                     ls.apply_renderer_style(layer_id, st, emit=emit)
                 elif style.get("mode") == "categorized" and style.get("field"):
@@ -772,6 +778,68 @@ class SkillStore:
             except Exception:
                 pass  # 设色失败不致命，图层仍显示
         return {"layer_id": layer_id, "name": meta.name, "feature_count": meta.feature_count}
+
+    @staticmethod
+    def _attach_density_bands(output: dict, registered: list[dict]) -> None:
+        """为统计补 density_bands：取该 run 第一个「面要素 + graduated 渐变」图层，
+        按实际 breaks/palette 数档位分布（与图层同源，非另行计算口径）。非数值统计跳过。"""
+        try:
+            from app.data_registry import DATA_REGISTRY
+
+            stats = output.get("stats")
+            if not isinstance(stats, dict) or "density_bands" in stats:
+                return
+            for item in registered:
+                layer_id = item.get("layer_id")
+                if not layer_id:
+                    continue
+                layer = DATA_REGISTRY.get_layer(layer_id)
+                if layer is None or layer.geometry.value != "Polygon":
+                    continue
+                grad = (layer.visualVariables or {}).get("graduated") or {}
+                field = grad.get("field")
+                breaks = grad.get("breaks")
+                palette = grad.get("palette")
+                if not field or not breaks:
+                    continue
+                fc = DATA_REGISTRY.get_geojson(layer_id) or {}
+                values: list[float] = []
+                for feature in fc.get("features", []) or []:
+                    try:
+                        value = float((feature.get("properties") or {}).get(field))
+                    except (TypeError, ValueError):
+                        continue
+                    if value == value:  # 排除 NaN
+                        values.append(value)
+                if not values:
+                    continue
+                finite = sorted(values)
+                edges = [float(finite[0])] + [float(b) for b in breaks] + [float(finite[-1])]
+                n = len(breaks) + 1
+                counts = [0] * n
+                for value in values:
+                    index = 0
+                    while index < len(breaks) and value > breaks[index]:
+                        index += 1
+                    counts[index] += 1
+                bands = [
+                    {"from": round(edges[i], 4), "to": round(edges[i + 1], 4), "count": counts[i]}
+                    for i in range(n)
+                ]
+                stats["density_bands"] = {
+                    "field": field,
+                    "classes": n,
+                    "method": str(grad.get("method") or "quantile"),
+                    "palette": [str(color) for color in (palette or [])],
+                    "breaks": [float(b) for b in breaks],
+                    "min": round(float(finite[0]), 4),
+                    "max": round(float(finite[-1]), 4),
+                    "bands": bands,
+                }
+                return
+        except Exception:
+            # 补档位不成功不致命：右卡/图例回退既有分类统计
+            return
 
     def _record_run_step(self, skill_id: str, run_id: str, output: dict, ctx: Any) -> None:
         """把 skill run 记为父 run 的一个 step（steps.jsonl 目前无人写，正好补上）。"""

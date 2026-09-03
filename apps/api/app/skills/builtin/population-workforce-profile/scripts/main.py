@@ -38,6 +38,10 @@ from shapely.geometry import Point, box
 ANALYSIS_CRS = "EPSG:32650"  # UTM 50N，适合深圳的投影
 OUTPUT_CRS = "EPSG:4326"
 GRID_VERSION = "grid_v1_100m_epsg32650"
+# D2 视觉：居住人口/就业人口主图层用单色紫渐变（浅→深，替代原 viridis 杂色），最低档近底浅退让
+POPULATION_DENSITY_RAMP = [
+    "#f3e8ff", "#e9d5ff", "#d8b4fe", "#c084fc", "#a855f7", "#7e22ce",
+]
 STUDY_AREA_ID = "candidate_lohas_study_area"
 CELL_SIZE_M = 100
 DATE_CALIBER = "202604"  # 单一月份快照（2026-04）
@@ -691,8 +695,16 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
                 "kind": "grid",
                 "crs": OUTPUT_CRS,
                 "fields": fields,
-                "style": {"mode": "graduated", "field": "home_count", "method": "quantile", "classes": 5},
-                "description": "100m 全局锚定格网；居住人口、就业人口、职住比与青年/高学历/中高收入群体（居住口径）的网格估算",
+                "style": {
+                    "mode": "graduated",
+                    "field": "home_count",
+                    "method": "quantile",
+                    "classes": 6,
+                    "palette": POPULATION_DENSITY_RAMP,
+                    "fillOpacity": 0.75,
+                    "strokeWidth": 0,
+                },
+                "description": "100m 全局锚定格网；居住人口数单色紫渐变（浅→深，低档近底退让）；就业/职住比/三群体字段保留为辅助口径",
             }
         ],
     }

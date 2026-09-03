@@ -38,6 +38,10 @@ function rgba(hex: string, alpha: number): Rgba {
 
 const TRANSPARENT: Rgba = [0, 0, 0, 0]
 
+/** D5-B：点图层显示抽稀上限——海量点全图铺开会互相叠死；
+ *  只影响画面（确定性等步长抽样），要素计数/统计仍用全量 feature_count 与空间计算。 */
+const DISPLAY_POINT_CAP = 12000
+
 /** 要素最小结构：读属性字段用 */
 interface FeatureLike {
   geometry?: { type?: string; coordinates?: unknown }
@@ -237,6 +241,13 @@ export function buildDeckLayers(
       const visibleFeatures = hasFilter
         ? features.filter((f) => matchesFilter(f.properties ?? {}, layerFilter as Record<string, unknown>))
         : features
+      /** 点图层显示抽稀（D5-B）：超大点集全图按等步长抽样到 ≤ DISPLAY_POINT_CAP，统计不受影响 */
+      const renderFeatures =
+        layer.geometry === 'Point' && visibleFeatures.length > DISPLAY_POINT_CAP
+          ? visibleFeatures.filter(
+              (_, index) => index % Math.ceil(visibleFeatures.length / DISPLAY_POINT_CAP) === 0,
+            )
+          : visibleFeatures
 
       /** 要素填充透明度：opacity_variable 渐变，否则整体填充不透明度 */
       const fillOpacityFor = (feature: FeatureLike): number => {
@@ -277,7 +288,7 @@ export function buildDeckLayers(
           ? new ScatterplotLayer({
               id: `deck-${layer.id}`,
               // 必须传 features 数组：createIterable 对 FeatureCollection 对象返回空
-              data: visibleFeatures as unknown as ScatterplotLayerProps['data'],
+              data: renderFeatures as unknown as ScatterplotLayerProps['data'],
               pickable: true,
               stroked: true,
               filled: true,
@@ -312,7 +323,7 @@ export function buildDeckLayers(
       if (!labelField) return [mainLayer]
       const textLayer = new TextLayer<{ properties: Record<string, unknown> }>({
         id: `deck-label-${layer.id}`,
-        data: visibleFeatures as unknown as TextLayerProps<{ properties: Record<string, unknown> }>['data'],
+        data: renderFeatures as unknown as TextLayerProps<{ properties: Record<string, unknown> }>['data'],
         pickable: false,
         getText: (feature) => String(feature.properties?.[labelField] ?? ''),
         getPosition: (feature: unknown) => labelPositionFor(feature as FeatureLike),
