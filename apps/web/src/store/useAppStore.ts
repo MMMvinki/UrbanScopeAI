@@ -797,9 +797,22 @@ const initialLayers: LayerMetadata[] = []
  * 把当前可见且缺几何的惰性图层逐个按需拉取（平台数据 lazy 图层），
  * 拉取完成后自增 geojsonTick 驱动地图重绘。无缺几何图层时立即返回。
  */
-/** 图层收尾纪律（D1-A）：把生成图层按「成果组」收敛——keepIds 内的生成图层可见，其余生成图层收起。
- *  非生成图层（platform/folder/uploaded/drawn 底座与上下文）保持现状，避免收尾误关用户手开的数据。
- *  keepIds 为空时不做任何改动（防御：无成果时不横扫图层）。 */
+/** 分析输出图层 id 标记：跨重启恢复时部分历史输出层 source 会退化成 uploaded/残留分析层，
+ *  光按 source==='generated' 收不干净 → 凡 id 命中分析输出命名（profile/study/isochrone/
+ *  bands/hard_to_reach/clusters/points_study/100m/500m 等）也按「分析产出」参与收尾。
+ *  平台底图/线网上下文（platform/folder/drawn）与普通用户上传（不命中标记）不受影响。 */
+const ANALYSIS_OUTPUT_ID_HINT =
+  /(_profile_|_study|_isochrone|_walking_bands|_hard_to_reach|_entrance_clusters|_points_study|_100m|_500m|_rail_|_bands$)/
+
+function isAnalysisManaged(layer: LayerMetadata): boolean {
+  if (layer.source === 'platform' || layer.source === 'folder' || layer.source === 'drawn') return false
+  if (layer.source === 'generated') return true
+  return ANALYSIS_OUTPUT_ID_HINT.test(layer.id)
+}
+
+/** 图层收尾纪律（D1-A/C12）：把「分析产出」图层按成果组收敛——keepIds 内的可见，其余收起。
+ *  非分析层（platform/folder/drawn 底座/线网上下文、不命中标记的用户上传）保持现状，
+ *  避免收尾误关用户手开的数据。keepIds 为空时不做任何改动（防御：无成果时不横扫图层）。 */
 function applyLayerGroupVisibility(
   layers: LayerMetadata[],
   keepIds: readonly string[],
@@ -807,7 +820,7 @@ function applyLayerGroupVisibility(
   if (!keepIds.length) return layers
   const keep = new Set(keepIds)
   return layers.map((layer) =>
-    layer.source === 'generated' ? { ...layer, visible: keep.has(layer.id) } : layer,
+    isAnalysisManaged(layer) ? { ...layer, visible: keep.has(layer.id) } : layer,
   )
 }
 
