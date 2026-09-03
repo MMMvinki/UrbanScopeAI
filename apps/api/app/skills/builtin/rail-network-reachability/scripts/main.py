@@ -61,8 +61,8 @@ DEFAULT_POP_GEOJSON = _ro.DEFAULT_POP_GEOJSON
 
 # 商业 POI × 地铁可达：每个范围内商业点按 ≤5/≤10/≤15 并集求 reach_class（'out'=15 分钟外）
 POI_LAYER_ID = "rail_poi_reach_study"
-# 点色：≤5 深 → ≤15 浅，区外近底灰（浅底图上仍可辨；见 REACH_COLORS）
-REACH_COLORS = {"5": "#1e3a8a", "10": "#3b82f6", "15": "#93c5fd", "out": "#d1d5db"}
+# 点色（暖色系，与可达带蓝三档做冷暖区分）：≤5 深橙红 → ≤15 浅琥珀，区外中性灰弱化
+REACH_COLORS = {"5": "#e11d48", "10": "#f97316", "15": "#fbbf24", "out": "#94a3b8"}
 
 
 class AnalysisInputError(ValueError):
@@ -578,7 +578,7 @@ def _materialize_layers(workspace: Path, geojson_by_id: dict[str, dict]) -> list
         CLUSTERS_LAYER_ID: {"radius": 6, "fillColor": "#334155", "strokeColor": "#ffffff", "strokeWidth": 1},
         BLIND_RES_LAYER_ID: {"mode": "categorized", "field": "kind", "classes": [{"value": "residential_blindspot", "color": "#e11d48"}], "fillColor": "#e11d48", "fillOpacity": 0.5, "strokeColor": "#7f1d1d", "strokeWidth": 1},
         BLIND_POP_LAYER_ID: {"mode": "categorized", "field": "kind", "classes": [{"value": "population_blindspot", "color": "#f97316"}], "fillColor": "#f97316", "fillOpacity": 0.55, "strokeColor": "#9a3412", "strokeWidth": 1},
-        POI_LAYER_ID: {"mode": "categorized", "field": "reach_class", "classes": [{"value": v, "color": c} for v, c in REACH_COLORS.items()], "radius": 3, "fillColor": "#1e3a8a", "strokeColor": "#ffffff", "strokeWidth": 0.5, "fillOpacity": 0.85},
+        POI_LAYER_ID: {"mode": "categorized", "field": "reach_class", "classes": [{"value": v, "color": c} for v, c in REACH_COLORS.items()], "radius": 2.4, "fillColor": "#e11d48", "strokeColor": "#ffffff", "strokeWidth": 1, "fillOpacity": 0.9},
     }
     for layer_id, gj in geojson_by_id.items():
         path = layer_dir / f"{layer_id}.json"
