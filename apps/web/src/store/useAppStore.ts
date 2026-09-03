@@ -434,6 +434,19 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
         }
         return block
       })
+      // 「一个一个呈现」：多模块主题组按序跑时，每跑完一个模块就把地图切到该模块产出图层
+      // （主图层 + 本次 run 已积累的该模块辅助层），并聚焦主图层；单模块/非 execute_skill_script 不触发。
+      if (name === 'execute_skill_script' && ok) {
+        const out = (event.data.output as { output_layer_id?: unknown; layer_ids?: unknown } | undefined) ?? {}
+        const primaryId = typeof out.output_layer_id === 'string' && out.output_layer_id ? out.output_layer_id : undefined
+        const keepIds = primaryId ? [primaryId] : [...runGeneratedLayerIds]
+        if (keepIds.length) {
+          const store = useAppStore.getState()
+          side.layers = applyLayerGroupVisibility(store.layers, keepIds)
+          if (primaryId) side.focusTarget = { layerId: primaryId, ts: Date.now() }
+          lastRunKeepIds = [...keepIds]
+        }
+      }
       return replaced ? { ...msg, plan, blocks: next } : { ...msg, plan }
     }
     case 'generated_layer': {
