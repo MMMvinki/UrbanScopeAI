@@ -619,6 +619,8 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
           const lastGroup = moduleLayerSets[moduleLayerSets.length - 1]
           const store = useAppStore.getState()
           side.layers = applyLayerGroupVisibility(store.layers, lastGroup)
+          // 记住本次成果组，供 stream_end/收尾后再兜底一次（幂等，防 refresh 等异步重开）
+          lastRunKeepIds = [...lastGroup]
         }
       }
       // 兜底（C12）：structured 缺失或未给出任何模块成果组时（如通用/LLM 执行路径），
@@ -627,6 +629,7 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
         const store = useAppStore.getState()
         if (runGeneratedLayerIds.length) {
           side.layers = applyLayerGroupVisibility(store.layers, runGeneratedLayerIds)
+          lastRunKeepIds = [...runGeneratedLayerIds]
         }
       }
       const group = toResultGroup((event.data.result_group as Parameters<typeof toResultGroup>[0]) ?? null)
@@ -678,8 +681,15 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
         trace: toToolTrace((event.data.trace as Parameters<typeof toToolTrace>[0]) ?? []),
       }
     }
-    case 'stream_end':
+    case 'stream_end': {
+      // 收尾幂等兜底：execution 已收尾后，stream_end 前若有异步事件把旧层重新拉可见，
+      // 这里再关一次（只保留本次成果组）；无成果组记录则不动。
+      if (lastRunKeepIds.length) {
+        const store = useAppStore.getState()
+        side.layers = applyLayerGroupVisibility(store.layers, lastRunKeepIds)
+      }
       return msg.status === 'done' ? msg : { ...msg, status: 'done' as const, elapsedMs: elapsedFrom(msg) }
+    }
     case 'error':
       return {
         ...msg,
@@ -697,6 +707,10 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
  *  也把旧 run 图层收起、只留本次 run 的成果组）。run_start 重置，execution 结束后清空。 */
 let runGeneratedLayerIds: string[] = []
 
+/** 最近一次 execution 收敛到的「成果组」id（主图层 + 辅助层）；stream_end 幂等再关一次防重开，
+ *  下次 run_start 清空。 */
+let lastRunKeepIds: string[] = []
+
 /** 把事件折叠进 agentId 对应消息，并统一提交副作用 */
 function applyEvent(agentId: string, event: AgentEvent): void {
   const side: Partial<AppState> = {}
@@ -712,8 +726,12 @@ function applyEvent(agentId: string, event: AgentEvent): void {
       void useAppStore.getState().addGeneratedLayer(layerId)
     }
   }
-  // 新 run 开始清空本次生成跟踪；execution 收尾后清空（防跨 run 误用）
-  if (event.type === 'run_start') runGeneratedLayerIds = []
+  // 新 run 开始清空本次生成跟踪与上轮成果组；execution 收尾后清空生成跟踪（防跨 run 误用，
+  // 成果组保留到 stream_end 幂等再关一次，随下一次 run_start 清空）
+  if (event.type === 'run_start') {
+    runGeneratedLayerIds = []
+    lastRunKeepIds = []
+  }
   if (event.type === 'execution') runGeneratedLayerIds = []
 }
 
