@@ -155,12 +155,20 @@ function ReadinessMatrix({ section }: { section: AnalysisSection }) {
  * 完成态显示真实数字与图例；阻断态不显示假数字/假地图，只显示缺口、停止代码与降级建议。
  */
 export function SectionCard({ section }: { section: AnalysisSection }) {
-  const setLayerVisible = useAppStore((s) => s.setLayerVisible)
+  const showAnalysisLayerGroup = useAppStore((s) => s.showAnalysisLayerGroup)
   const setActiveNav = useAppStore((s) => s.setActiveNav)
 
   const viewOnMap = () => {
-    if (!section.outputLayer) return
-    setLayerVisible(section.outputLayer, true)
+    // 图层收尾纪律：开「当前模块成果组」（主图层 + 辅助层），同时收起其他生成图层；
+    // 没有组信息（老后端字段）时退回首版语义只开主图层。
+    const groupIds =
+      section.outputLayerIds && section.outputLayerIds.length
+        ? section.outputLayerIds
+        : section.outputLayer
+          ? [section.outputLayer]
+          : []
+    if (!groupIds.length) return
+    showAnalysisLayerGroup(groupIds, section.outputLayer ?? groupIds[0])
     setActiveNav('data')
   }
 
@@ -210,10 +218,11 @@ export function SectionCard({ section }: { section: AnalysisSection }) {
 
         {section.kind === 'module' && section.status === 'completed' && (
           <>
-            {section.summary ? (
+            {section.conclusion || section.summary ? (
               <div className="analysis-conclusion">
                 <div className="analysis-card__minihead">结论</div>
-                <p className="analysis-card__conclusion">{section.summary}</p>
+                {/* 结论一句（D1-B）：优先用从 stats 提炼的结论行；无可用时回退 summary 首句 */}
+                <p className="analysis-card__conclusion">{section.conclusion ?? section.summary}</p>
               </div>
             ) : null}
             <MetricRow metrics={section.metrics ?? []} />

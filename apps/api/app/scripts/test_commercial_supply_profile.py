@@ -126,6 +126,8 @@ check("排除派生答案", "*_activity_type fields" in evidence["excluded_input
 layer = DATA_REGISTRY.get_layer("commercial_supply_profile_100m")
 check("结果图层已注册", layer is not None and layer.feature_count == grid_count)
 check("结果图层 CRS 元数据正确", layer is not None and layer.crs == "EPSG:4326")
+# 网格成果语义标记（D5-A）：分析网格层 kind=grid，UI 标签「栅格/网格」，仍按矢量取几何
+check("网格图层语义 kind=grid", layer is not None and layer.kind == "grid")
 layer_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "commercial_supply_profile_100m.json"
 geojson = json.loads(layer_path.read_text(encoding="utf-8"))
 check("GeoJSON 要素数与统计一致", len(geojson.get("features") or []) == grid_count)

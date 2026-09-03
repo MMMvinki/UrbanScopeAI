@@ -685,6 +685,11 @@ class SkillStore:
             geometry = GeometryType(geom_type)
         except ValueError:
             geometry = GeometryType(_dominant_geometry(geojson))
+        # 语义 kind：网格成果层声明 kind="grid"（前端标签「栅格/网格」）；未声明回落 vector。
+        # raster（瓦片）不走本路径，防手滑把非瓦片层误标成 raster。
+        kind = str(layer.get("kind") or "vector")
+        if kind not in ("vector", "raster", "grid"):
+            kind = "vector"
         meta = LayerMetadata(
             id=layer_id,
             name=str(layer.get("name") or layer_id),
@@ -696,6 +701,7 @@ class SkillStore:
             fields=fields,
             description=layer.get("description"),
             generated_by="skill",
+            kind=kind,
         )
         DATA_REGISTRY.register_generated(meta, geojson=geojson)
 

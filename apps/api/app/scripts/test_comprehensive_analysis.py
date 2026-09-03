@@ -126,6 +126,9 @@ check(
         and module.evidence
         and module.limitations
         and module.output_layer
+        # D1-A：output_layer_ids 反映该 run 产出图层组（图层收尾纪律的前端依据）
+        and module.output_layer_ids
+        and module.output_layer in module.output_layer_ids
         for module in structured.modules
     ),
 )
@@ -199,6 +202,14 @@ check(
     "真实综合结果可追溯",
     real_analysis is not None
     and all(module.run_id and module.output_layer and module.stats and module.evidence for module in real_analysis.modules),
+)
+check(
+    "真实模块 output_layer_ids 覆盖主图层（D1-A 图层收尾依据）",
+    real_analysis is not None
+    and all(
+        module.output_layer_ids and module.output_layer in module.output_layer_ids
+        for module in real_analysis.modules
+    ),
 )
 check(
     "综合结论包含规划语义红线、人口口径与候选坐标措辞",

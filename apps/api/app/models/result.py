@@ -49,6 +49,9 @@ class AnalysisModuleResult(BaseModel):
     evidence: dict[str, Any] = Field(default_factory=dict)
     limitations: list[str] = Field(default_factory=list)
     output_layer: str | None = None
+    # 本 run 实际产出的全部图层 layer_id（主图层 + 辅助层，来源 run.layers）；
+    # 前端「图层收尾纪律」据此只保留当前模块成果组、关掉历史 run 的无关图层。
+    output_layer_ids: list[str] = Field(default_factory=list)
     stop_code: str | None = None
     blocked_reason: str | None = None
 

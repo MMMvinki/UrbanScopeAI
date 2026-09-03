@@ -24,6 +24,8 @@ export interface AnalysisModuleResult {
   evidence: Record<string, unknown>
   limitations: string[]
   output_layer: string | null
+  /** 本 run 实际产出的全部图层 id（主图层 + 辅助层；后端 AnalysisModuleResult.output_layer_ids） */
+  output_layer_ids: string[]
   stop_code: string | null
   blocked_reason: string | null
 }

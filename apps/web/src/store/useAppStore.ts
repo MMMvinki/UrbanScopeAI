@@ -597,7 +597,28 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
       const structured = parseStructuredAnalysis(
         (event.data as { structured_analysis?: unknown }).structured_analysis,
       )
-      if (structured) side.lastComprehensiveAnalysis = structured
+      if (structured) {
+        side.lastComprehensiveAnalysis = structured
+        // 图层收尾纪律（D1-A）：本 run 完成的每个模块都带 outputLayerIds（主图层 + 辅助层）。
+        // 只默认打开「最后一个完成的板块」的完整成果组；本 run 其他模块的历史生成层
+        // （含上次 run 的 *_profile_* / subway_entrance_study 等中间层）显式收起，
+        // 避免旧 run 图层与新成果叠满地图。图层仍可在列表中手动打开。
+        const completed = structured.modules.filter((module) => module.status === 'completed')
+        const moduleLayerSets = completed
+          .map((module) =>
+            module.output_layer_ids && module.output_layer_ids.length
+              ? module.output_layer_ids
+              : module.output_layer
+                ? [module.output_layer]
+                : [],
+          )
+          .filter((ids) => ids.length)
+        if (moduleLayerSets.length) {
+          const lastGroup = moduleLayerSets[moduleLayerSets.length - 1]
+          const store = useAppStore.getState()
+          side.layers = applyLayerGroupVisibility(store.layers, lastGroup)
+        }
+      }
       const group = toResultGroup((event.data.result_group as Parameters<typeof toResultGroup>[0]) ?? null)
       if (group) {
         // 成果组与 run 归属：信封级 run_id 打标，供成果页「运行记录」与对话 chip 跳转
@@ -756,6 +777,20 @@ const initialLayers: LayerMetadata[] = []
  * 把当前可见且缺几何的惰性图层逐个按需拉取（平台数据 lazy 图层），
  * 拉取完成后自增 geojsonTick 驱动地图重绘。无缺几何图层时立即返回。
  */
+/** 图层收尾纪律（D1-A）：把生成图层按「成果组」收敛——keepIds 内的生成图层可见，其余生成图层收起。
+ *  非生成图层（platform/folder/uploaded/drawn 底座与上下文）保持现状，避免收尾误关用户手开的数据。
+ *  keepIds 为空时不做任何改动（防御：无成果时不横扫图层）。 */
+function applyLayerGroupVisibility(
+  layers: LayerMetadata[],
+  keepIds: readonly string[],
+): LayerMetadata[] {
+  if (!keepIds.length) return layers
+  const keep = new Set(keepIds)
+  return layers.map((layer) =>
+    layer.source === 'generated' ? { ...layer, visible: keep.has(layer.id) } : layer,
+  )
+}
+
 async function ensureVisibleGeojson(): Promise<void> {
   const { layers, geojsonTick } = useAppStore.getState()
   const pending = layers.filter(
@@ -864,6 +899,8 @@ interface AppState {
   toggleLayerVisibility: (id: string) => void
   setLayerVisible: (id: string, visible: boolean) => void
   showOnlyLayer: (id: string) => void
+  /** 图层收尾纪律：把生成图层收敛到某个成果组（keepIds），其余生成图层收起；focusId 存在时定位到它 */
+  showAnalysisLayerGroup: (ids: string[], focusId?: string) => void
   /** 彻底删除图层（后端清磁盘物化文件 + 项目 manifest）；成功后前端清理，失败抛错 */
   removeLayer: (id: string) => Promise<void>
   /** Agent 生成图层事件到达时立即并入 store（无需等整个 run 结束），真实几何上屏 */
@@ -1385,6 +1422,11 @@ export const useAppStore = create<AppState>((set) => ({
       layers: state.layers.map((layer) => ({ ...layer, visible: layer.id === id })),
     }))
     void ensureVisibleGeojson()
+  },
+  showAnalysisLayerGroup: (ids, focusId) => {
+    set((state) => ({ layers: applyLayerGroupVisibility(state.layers, ids) }))
+    // 定位到主图层（成果卡点击时）：生成图层几乎都已在本 run 中加载，focusLayer 兜底 lazy 取几何
+    if (focusId) void useAppStore.getState().focusLayer(focusId)
   },
   removeLayer: async (id) => {
     // 后端彻底删除（同步清磁盘物化文件 + 项目 manifest，跨重启不复活），成功才清理前端。

@@ -64,7 +64,8 @@ export interface BackendLayer {
   /* 源文件格式（后端 model 字段 data_type） */
   data_type?: string | null
   lazy?: boolean
-  kind?: 'vector' | 'raster'
+  /* vector=普通要素 | raster=瓦片位图 | grid=分析网格产品（前端标签「栅格/网格」，仍按矢量取几何） */
+  kind?: 'vector' | 'raster' | 'grid'
   tile_url?: string
   bbox?: number[] | null
   /* Sprint 2 样式字段（随后端 /layers 下发；Pydantic 序列化为 camelCase） */

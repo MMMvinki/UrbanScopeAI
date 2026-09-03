@@ -323,6 +323,11 @@ def _module_from_run(module_id: str, run: dict[str, Any]) -> AnalysisModuleResul
             limitations=[reason],
         )
     limitations = [str(item) for item in evidence.get("limitations", []) if str(item).strip()]
+    output_layer_ids = [
+        str(item.get("layer_id"))
+        for item in layers
+        if isinstance(item, dict) and item.get("layer_id")
+    ]
     return AnalysisModuleResult(
         module_id=module_id,
         status="completed",
@@ -334,6 +339,8 @@ def _module_from_run(module_id: str, run: dict[str, Any]) -> AnalysisModuleResul
         evidence=evidence,
         limitations=limitations,
         output_layer=str(run.get("output_layer_id") or output.get("layer_id") or "") or None,
+        # 主图层在前端「在地图上查看」只开该模块；完整成果组（含辅助层）供图层收尾纪律使用。
+        output_layer_ids=output_layer_ids,
     )
 
 

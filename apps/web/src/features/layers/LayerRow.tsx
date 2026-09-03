@@ -16,6 +16,9 @@ const sourceLabel: Record<LayerMetadata['source'], string> = {
 /** 图层数据类型角标：几何（点/线/面/表格/栅格）+ 源文件格式（CSV/SHP/…），便于快速识别图层。 */
 function layerTypeTag(layer: LayerMetadata): string {
   if (layer.kind === 'raster') return '栅格'
+  // 分析网格产品（100m/500m 网格成果）语义上是「栅格/网格」，不是真实地块「面」；
+  // 仍按矢量取几何渲染，仅标签区别（见 layerTypes.kind='grid'）。
+  if (layer.kind === 'grid') return '栅格/网格'
   const geom: Record<LayerMetadata['geometry'], string> = {
     Point: '点',
     LineString: '线',
@@ -277,7 +280,16 @@ export function LayerRow({
       {showDetail && (
         <div className="layer-row__detail">
           <p className="layer-row__detail-line">
-            几何：{layer.geometry === 'Table' ? '表格' : layer.geometry} · {layer.featureCount} 个要素 · {layer.crs}
+            几何：
+            {layer.kind === 'grid'
+              ? '栅格/网格（分析网格）'
+              : layer.kind === 'raster'
+                ? '栅格瓦片'
+                : layer.geometry === 'Table'
+                  ? '表格'
+                  : layer.geometry}
+            {' · '}
+            {layer.featureCount} 个要素 · {layer.crs}
           </p>
           <p className="layer-row__detail-line">
             {layer.lazy && layer.featureCount > 0 ? '按需加载 · ' : ''}来源：{sourceLabel[layer.source]}

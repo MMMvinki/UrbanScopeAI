@@ -487,6 +487,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
                 "path": f"data/layers/{layer_id}.json",
                 "feature_count": grid_count,
                 "geometry": "Polygon",
+                "kind": "grid",
                 "crs": OUTPUT_CRS,
                 "fields": fields,
                 "style": {"mode": "categorized", "field": "supply_day_quadrant"},

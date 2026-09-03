@@ -79,6 +79,8 @@ export interface AnalysisSection {
   achievedLevel?: string
   runId?: string
   summary?: string
+  /** 一句结论（D1-B）：从 stats 提炼的可读结论行；缺省时 UI 回退 summary 首句 */
+  conclusion?: string
   metrics?: StatMetric[]
   legendGroups?: LegendGroup[]
   funnel?: FunnelStep[]
@@ -86,6 +88,8 @@ export interface AnalysisSection {
   evidence?: EvidenceGroup[]
   limitations?: string[]
   outputLayer?: string
+  /** 本 run 产出全部图层 id（含辅助层）：「在地图上查看」打开整个成果组，不只主图层 */
+  outputLayerIds?: string[]
   stopCode?: string
   blockedReason?: string
   degradeHint?: string
@@ -233,6 +237,15 @@ export function formatArea(km2: number): string {
   return `${formatNumber(km2)} km²`
 }
 
+/** 取文本首句（中文句号截断），供结论回退；无句号时按长度截断。 */
+function firstSentence(text: string): string {
+  const t = (text ?? '').trim()
+  if (!t) return t
+  const cut = t.search(/[。！？]/)
+  if (cut > 0) return `${t.slice(0, cut + 1)}`
+  return t.length > 140 ? `${t.slice(0, 140)}…` : t
+}
+
 /* ---------------- 安全取值 ---------------- */
 
 function str(v: unknown): string {
@@ -279,6 +292,9 @@ function parseModule(raw: unknown): AnalysisModuleResult | null {
     evidence: obj(o.evidence),
     limitations: strArr(o.limitations),
     output_layer: typeof o.output_layer === 'string' ? o.output_layer : null,
+    output_layer_ids: Array.isArray(o.output_layer_ids)
+      ? o.output_layer_ids.map(String).filter(Boolean)
+      : [],
     stop_code: typeof o.stop_code === 'string' ? o.stop_code : null,
     blocked_reason: typeof o.blocked_reason === 'string' ? o.blocked_reason : null,
   }
@@ -457,6 +473,85 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
     return list.filter((m): m is StatMetric => m != null)
   }
   return []
+}
+
+/** 一句结论（D1-B）：从 stats 提炼单行「结论句」，数字与 buildMetrics / 图表 / 图例同源。
+ *  某字段缺失时只组装现有部分；完全无可用数字返回 null（调用方回退首句摘要）。 */
+function buildConclusion(module: AnalysisModuleResult): string | null {
+  const stats = module.stats
+  const clause: string[] = []
+  const push = (s: string | null | undefined): void => {
+    if (s) clause.push(s)
+  }
+  if (module.module_id === 'activity_temporal') {
+    const types = obj(stats.day_night_types)
+    const rhythmCounts = RHYTHM_ORDER.map((code) => {
+      const n = num(obj(types[code]).grid_count)
+      return n != null ? `${RHYTHM_LABELS[code]} ${formatInt(n)} 格` : null
+    }).filter((s): s is string => Boolean(s))
+    const valid = num(stats.valid_cells)
+    push(valid != null ? `范围内有效活动格 ${formatInt(valid)} 个` : null)
+    if (rhythmCounts.length) clause.push(`（${rhythmCounts.join('、')}）`)
+  } else if (module.module_id === 'commercial_supply') {
+    const inputs = obj(stats.inputs)
+    const classes = obj(stats.supply_classes)
+    const inside = num(inputs.commercial_points_in_boundary)
+    const high = num(obj(classes.high_supply).grid_count)
+    const low = num(obj(classes.low_supply).grid_count)
+    const thr = num(obj(stats.thresholds).commercial_density_km2)
+    push(inside != null ? `范围内 ${formatInt(inside)} 个有效分类商业点` : null)
+    if (high != null && low != null) push(`高供给 ${formatInt(high)} 格 / 低供给 ${formatInt(low)} 格`)
+    push(thr != null ? `密度阈值 ${formatNumber(thr)} 个/km²` : null)
+  } else if (module.module_id === 'commercial_vitality') {
+    const dayMis = obj(obj(stats.supply_day_quadrants).S_L_V_H)
+    const nightMis = obj(obj(stats.supply_night_quadrants).S_L_V_H)
+    const dayHighHigh = obj(obj(stats.supply_day_quadrants).S_H_V_H)
+    const dm = num(dayMis.grid_count)
+    const nm = num(nightMis.grid_count)
+    const hh = num(dayHighHigh.grid_count)
+    push(dm != null && nm != null ? `昼间高活力·低供给（错配候选）${formatInt(dm)} 格、夜间 ${formatInt(nm)} 格` : null)
+    push(hh != null ? `昼间高·高供给 ${formatInt(hh)} 格` : null)
+  } else if (module.module_id === 'public_service') {
+    const counts = obj(stats.counts)
+    const groups = obj(stats.groups)
+    const included = num(counts.included)
+    const label: Record<string, string> = {
+      education_culture: '教育文化',
+      medical_health: '医疗健康',
+      sports: '体育活动',
+      convenience_emergency: '便民与应急',
+    }
+    const groupParts: string[] = []
+    for (const code of ['education_culture', 'medical_health', 'sports', 'convenience_emergency'] as const) {
+      const n = num(obj(groups[code]).count)
+      if (n != null && n > 0) groupParts.push(`${label[code] ?? code} ${formatInt(n)}`)
+    }
+    push(included != null ? `规划分析纳入 ${formatInt(included)} 个设施点` : null)
+    if (groupParts.length) clause.push(`（${groupParts.join('、')}）`)
+  } else if (module.module_id === 'population_profile') {
+    const counts = obj(stats.counts)
+    const home = num(counts.home_in_range_population)
+    const work = num(counts.work_in_range_population)
+    const ratio = num(stats.jobs_resident_ratio)
+    push(home != null && work != null ? `居住约 ${formatInt(home)} 人、就业约 ${formatInt(work)} 人` : null)
+    push(ratio != null ? `职住比 ${formatNumber(ratio)}（就业 ÷ 居住）` : null)
+  } else if (module.module_id === 'commercial_rail_accessibility') {
+    const acc = obj(stats.accessibility)
+    const bands = obj(acc.bands)
+    const requested = num(obj(stats.centers).requested)
+    const c5 = num(obj(bands['5']).cumulative_count)
+    const c10 = num(obj(bands['10']).cumulative_count)
+    const c15 = num(obj(bands['15']).cumulative_count)
+    const total = num(acc.total_commercial_points)
+    push(requested != null ? `从 ${formatInt(requested)} 个代表出入口出发（真实路网步行）` : null)
+    if (c5 != null && c10 != null && c15 != null) {
+      push(`5/10/15 分钟可及商业点 ${formatInt(c5)} / ${formatInt(c10)} / ${formatInt(c15)} 个`)
+    } else if (c15 != null && total != null) {
+      push(`15 分钟可及商业点 ${formatInt(c15)} 个（范围内共 ${formatInt(total)} 个）`)
+    }
+  }
+  const text = clause.join('；').replace(/；（/g, '（').trim()
+  return text ? `${text}。` : null
 }
 
 function quadrantRows(stats: Record<string, unknown>, key: string): LegendRow[] {
@@ -896,6 +991,28 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
   return []
 }
 
+/** 关键图兜底（D1-B）：每个 completed 板块至少一张图。主图表缺字段为空时，
+ *  用图例同源的格数/点数再呈一次（数字与 buildLegendGroups 同源，不新增计算）。 */
+function ensureKeyCharts(module: AnalysisModuleResult): ChartGroup[] {
+  const charts = buildCharts(module)
+  if (charts.length) return charts
+  const rows = buildLegendGroups(module)
+    .flatMap((group) => group.rows)
+    .filter((row) => (row.cells ?? row.points) != null)
+  if (!rows.length) return []
+  const bars = rows.slice(0, 12).map((row) => ({
+    label: row.label,
+    value: (row.cells ?? row.points) as number,
+  }))
+  return [
+    {
+      title: '成果读数 · 格/点数',
+      bars,
+      note: '回退图：主图表缺字段时从图例同源数字读取格/点数',
+    },
+  ]
+}
+
 /* ---------------- 板块构建 ---------------- */
 
 function buildPlanSection(analysis: StructuredAnalysisResult): AnalysisSection {
@@ -955,12 +1072,15 @@ function buildModuleSection(module: AnalysisModuleResult, index: number): Analys
     ...base,
     status: 'completed',
     summary: module.summary,
+    // 结论一句：优先从 stats 提炼的可读行；未知模块回退 summary 首句（SectionCard 展示时兜底）
+    conclusion: buildConclusion(module) ?? firstSentence(module.summary),
     metrics: buildMetrics(module),
     legendGroups: buildLegendGroups(module),
     funnel: buildFunnel(module),
-    charts: buildCharts(module),
+    charts: ensureKeyCharts(module),
     evidence: evidenceGroups(module.evidence),
     outputLayer: module.output_layer ?? undefined,
+    outputLayerIds: module.output_layer_ids?.length ? module.output_layer_ids : undefined,
   }
 }
 

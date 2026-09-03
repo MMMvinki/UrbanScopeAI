@@ -33,8 +33,8 @@ export interface LayerMetadata {
   dataType?: string | null
   /** 几何按需加载：重图层不进 bulk 端点，显隐时惰性拉取 /layers/{id}/geojson */
   lazy?: boolean
-  /** 图层类型：vector（默认）| raster（栅格瓦片渲染） */
-  kind?: 'vector' | 'raster'
+  /** 图层类型：vector（默认）| raster（栅格瓦片渲染）| grid（分析网格产品：仍按矢量取几何，标签显示「栅格/网格」） */
+  kind?: 'vector' | 'raster' | 'grid'
   /** raster 图层瓦片 URL 模板（{z}/{x}/{y} 占位） */
   tileUrl?: string
   /** 真实范围 [minx,miny,maxx,maxy] */
