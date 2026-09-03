@@ -61,8 +61,9 @@ DEFAULT_POP_GEOJSON = _ro.DEFAULT_POP_GEOJSON
 
 # 商业 POI × 地铁可达：每个范围内商业点按 ≤5/≤10/≤15 并集求 reach_class（'out'=15 分钟外）
 POI_LAYER_ID = "rail_poi_reach_study"
-# 点色（暖色系，与可达带蓝三档做冷暖区分）：≤5 深橙红 → ≤15 浅琥珀，区外中性灰弱化
-REACH_COLORS = {"5": "#e11d48", "10": "#f97316", "15": "#fbbf24", "out": "#94a3b8"}
+# 点色（暖色系，与可达带蓝三档做冷暖区分；取 YlOrBr 黄-橙-棕无红系，深→浅，避免玫红撞蓝）
+# 来源参考：ColorBrewer 顺序色 YlOrBr（蓝底 overlay 用无红暖系 + 中性灰区外）
+REACH_COLORS = {"5": "#993404", "10": "#d95f0e", "15": "#fe9929", "out": "#9ca3af"}
 
 
 class AnalysisInputError(ValueError):
@@ -573,7 +574,7 @@ def _materialize_layers(workspace: Path, geojson_by_id: dict[str, dict]) -> list
     layer_dir.mkdir(parents=True, exist_ok=True)
     out: list[dict] = []
     styles = {
-        BANDS_LAYER_ID: {"mode": "categorized", "field": "minute", "classes": [{"value": str(m), "color": c} for m, c in ISO_COLORS.items()], "strokeWidth": 0, "fillOpacity": 0.62},
+        BANDS_LAYER_ID: {"mode": "categorized", "field": "minute", "classes": [{"value": str(m), "color": c} for m, c in ISO_COLORS.items()], "strokeWidth": 0, "fillOpacity": 0.5},
         HARD_LAYER_ID: {"fillColor": "#cbd5e1", "fillOpacity": 0.35, "strokeWidth": 0},
         CLUSTERS_LAYER_ID: {"radius": 6, "fillColor": "#334155", "strokeColor": "#ffffff", "strokeWidth": 1},
         BLIND_RES_LAYER_ID: {"mode": "categorized", "field": "kind", "classes": [{"value": "residential_blindspot", "color": "#e11d48"}], "fillColor": "#e11d48", "fillOpacity": 0.5, "strokeColor": "#7f1d1d", "strokeWidth": 1},
