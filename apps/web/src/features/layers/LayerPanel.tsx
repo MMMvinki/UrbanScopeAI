@@ -628,7 +628,6 @@ export function LayerPanel() {
   return (
     <div className="panel-content layer-panel">
       <header className="panel-header">
-        <h2 className="panel-header__title">图层</h2>
         <div className="panel-header__actions">
           <PanelCollapseButton />
         </div>

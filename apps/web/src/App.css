@@ -7054,15 +7054,24 @@ button:disabled {
 
 /* ============================================================
    「我的图层」组头行：左折叠按钮 + 右侧图层操作（添加/绘制/清空）附属
+   提级为与「本地数据目录」同级的 section 头（背景 + 更大字号 + 加宽 padding）
    ============================================================ */
 .layer-group__header-row {
   display: flex;
   align-items: center;
   gap: 4px;
+  margin: 6px 8px 2px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface) 82%, var(--border-soft));
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
 }
 .layer-group__header-row > .layer-group__header--button {
   flex: 1;
   min-width: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
 }
 .layer-group__actions {
   display: inline-flex;
