@@ -112,14 +112,16 @@ rich = grids["type_richness_cells"]
 check("丰富度守恒", rich["cells_0_types"] + rich["cells_1_types"] + rich["cells_2_types"] + rich["cells_3_types"] + rich["cells_4_types"] == grid_count)
 check("丰富度分布", rich["cells_1_types"] == 579 and rich["cells_2_types"] == 215 and rich["cells_3_types"] == 44 and rich["cells_4_types"] == 4)
 
-# D3 密度平滑多档（图层 applied 色带同源）
+# D3 密度平滑多档（图层 applied 色带同源）：分位断点只对「有设施格」算，
+# 0 设施格 supply_density_km2 为空 → 主图近底色「无设施」档，不占渐变档位
 db = stats.get("density_bands") or {}
+nofac = grids["no_facility_cells"]
 check(
-    "density_bands 单色渐变同源",
-    db.get("field") == "facility_density_km2"
+    "density_bands 单色渐变同源（仅含设施格）",
+    db.get("field") == "supply_density_km2"
     and db.get("classes") == 6
     and (db.get("palette") or [])[0] == "#ecfdf5"
-    and sum(int(b.get("count", 0)) for b in db.get("bands", [])) == grid_count,
+    and sum(int(b.get("count", 0)) for b in db.get("bands", [])) == grid_count - nofac,
 )
 
 # 类别审计：明确排除清单出现在输出
@@ -155,6 +157,12 @@ check("点图层要素数=纳入数", pts_layer is not None and pts_layer.featur
 layer_path = API_ROOT / "app" / "workspace" / "data" / "layers" / "public_service_profile_100m.json"
 geojson = json.loads(layer_path.read_text(encoding="utf-8"))
 check("GeoJSON 要素数与统计一致", len(geojson.get("features") or []) == grid_count)
+props = [(f.get("properties") or {}) for f in (geojson.get("features") or [])]
+# 视觉列：0 设施格 supply_density_km2 置空（主图落近底色无设施档），有设施格保留平滑密度
+null_vis = sum(1 for p in props if p.get("supply_density_km2") is None)
+pos_vis = [p["supply_density_km2"] for p in props if (p.get("facility_count") or 0) > 0]
+check("视觉列 0 设施格置空", null_vis == nofac)
+check("视觉列有设施格=正平滑密度", len(pos_vis) == grid_count - nofac and all(v is not None and v > 0 for v in pos_vis))
 
 print("REAL_STATS=" + json.dumps(stats, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
 print("CORE_FINGERPRINT=" + fingerprints[0])

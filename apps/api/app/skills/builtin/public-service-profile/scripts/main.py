@@ -513,6 +513,11 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     grid["facility_density_km2"] = np.round(
         sum((grid[f"{code}_density"].to_numpy(dtype=float) for code in GROUP_ORDER)), 4
     )
+    # D3：视觉分级用供给密度列 —— 0 设施格（格内无纳入点）置空（null），
+    # 前端对 null 落近底色「无设施」档，等量分位断点只对「有设施格」计算，
+    # 空区不会被中线绿覆盖成伪 0 连续面。统计口径不变：facility_density_km2
+    # 与各格计数原样保留，本列仅作上图用。
+    grid["supply_density_km2"] = grid["facility_density_km2"].where(grid["facility_count"] > 0)
 
     grid_count = len(grid)
     cell_area_km2 = (cell_size_m / 1000.0) ** 2  # 100m → 0.01 km²
@@ -666,6 +671,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             "本板块为资源数量/类型/密度盘点，未计算覆盖、可达、容量与品质（15 分钟生活圈未做）",
             "100m 网格为 2026-09 重算口径（数字与旧 500m 版不可横比）；密度为高斯核平滑估计（带宽 300m），非逐格精确计数",
             "研究区边缘 1 个带宽内的密度受边界截断影响",
+            "主图层按两段呈现：0 设施格（格内无纳入点）置空并以近底色「无设施」档显示，有设施格按高斯平滑密度分位设色；该视觉分层只作用于上图（supply_density_km2），不改动 facility_density_km2 与任何统计数字，也不会把空区铺成中绿色伪 0 连续面",
             "资源相对较少仅表示当前 POI 数据下的相对空间现象，不构成设施短缺、服务空白或规划缺口结论",
             "不推断设施公办或民办；POI 类别字段无法证明产权和运营主体",
             "POI 数量是点位计数，不是独立建筑物数，也不是服务容量、品质或利用率",
@@ -694,6 +700,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
         "education_culture_density", "medical_health_density",
         "sports_density", "convenience_emergency_density",
         "facility_density_km2",
+        "supply_density_km2",
         "center_lon", "center_lat", "geometry",
     ]
     output_grid = grid[output_columns].to_crs(OUTPUT_CRS)
@@ -716,6 +723,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
         {"name": "sports_density", "type": "number", "description": "体育活动设施密度平滑估计（高斯核带宽 300m，个/km²）"},
         {"name": "convenience_emergency_density", "type": "number", "description": "便民与应急设施密度平滑估计（高斯核带宽 300m，个/km²）"},
         {"name": "facility_density_km2", "type": "number", "description": "四功能组合计密度平滑估计（个/km²；距设施>900m 的格为 0）"},
+        {"name": "supply_density_km2", "type": "number", "description": "视觉分级用设施供给密度（个/km²）：有设施格=该格高斯平滑密度；0 设施格为空(null)→主图近底色「无设施」档（统计口径仍看 facility_density_km2）"},
     ]
 
     class_parts = ", ".join(
@@ -792,7 +800,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             "fields": fields,
             "style": {
                 "mode": "graduated",
-                "field": "facility_density_km2",
+                "field": "supply_density_km2",
                 "method": "quantile",
                 "classes": 6,
                 "palette": PUBLIC_DENSITY_RAMP,
@@ -800,7 +808,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
                 "fillOpacity": 0.72,
                 "strokeWidth": 0,
             },
-            "description": "100m 全局锚定格网；四功能组设施密度平滑估计多档渐变（单色浅→深，无设施格退让近底）；点数/类型丰富度/相对分型字段保留为辅助口径",
+            "description": "100m 全局锚定格网；有设施格按平滑密度分位多档渐变（单色浅→深），0 设施格为空→近底色保留「无设施」档，空区不做成伪 0 连续面；点数/类型丰富度/相对分型字段保留为辅助口径",
         }
     ]
     if point_layer is not None:
