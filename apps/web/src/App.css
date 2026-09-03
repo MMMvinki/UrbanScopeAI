@@ -6569,6 +6569,23 @@ button:disabled {
   margin: 0 0 12px;
 }
 
+/* 结论 callout：让「一句话回答」从天书式段落里浮出来 */
+.analysis-conclusion {
+  background: rgba(14, 165, 233, 0.05);
+  border-left: 3px solid var(--info);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  padding: 10px 14px;
+  margin: 0 0 14px;
+}
+.analysis-card__minihead {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--info-text);
+  margin: 0 0 4px;
+}
+
 /* 依据（可折叠） */
 .analysis-evidence {
   margin-top: 12px;
@@ -6605,6 +6622,31 @@ button:disabled {
   position: absolute;
   left: 4px;
   color: var(--info-text);
+}
+.analysis-evidence__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 10px;
+}
+.analysis-evidence__group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  background: var(--surface);
+}
+.analysis-evidence__group-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+.analysis-evidence__icon {
+  font-size: 13px;
+  line-height: 1;
 }
 
 /* 图例 */
@@ -6704,6 +6746,72 @@ button:disabled {
 }
 .analysis-funnel__arrow {
   color: var(--text-muted);
+}
+
+/* 对比条形图（时段/类型/群体对照） */
+.analysis-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 14px;
+  margin: 0 0 16px;
+}
+.analysis-chart {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: var(--surface);
+}
+.analysis-chart__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+.analysis-chart__bars {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.analysis-chart__row {
+  display: grid;
+  grid-template-columns: minmax(64px, auto) 1fr minmax(52px, auto);
+  gap: 8px;
+  align-items: center;
+}
+.analysis-chart__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.analysis-chart__track {
+  height: 10px;
+  background: var(--border-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.analysis-chart__fill {
+  height: 100%;
+  background: var(--info);
+  border-radius: 999px;
+  min-width: 4px;
+}
+.analysis-chart__value {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  text-align: right;
+  white-space: nowrap;
+}
+.analysis-chart__note {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 10px;
+  line-height: 1.5;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
 }
 
 /* 限制说明（固定可见，不折叠） */

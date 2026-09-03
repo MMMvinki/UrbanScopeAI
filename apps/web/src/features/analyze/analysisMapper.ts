@@ -37,6 +37,28 @@ export interface FunnelStep {
   value: number
 }
 
+/** 证据链分组：一项「数据来源 / 方法 / 口径 / 排除」主题，下挂若干可读行 */
+export interface EvidenceGroup {
+  title: string
+  icon?: string
+  lines: string[]
+}
+
+/** 对比条形图的一条柱 */
+export interface ChartBar {
+  label: string
+  value: number
+  unit?: string
+}
+
+/** 一组对比条形图（一份 stats 的某项分类/口径对比） */
+export interface ChartGroup {
+  title: string
+  bars: ChartBar[]
+  unit?: string
+  note?: string
+}
+
 export interface ReadinessRow {
   moduleId: string
   moduleLabel: string
@@ -60,7 +82,8 @@ export interface AnalysisSection {
   metrics?: StatMetric[]
   legendGroups?: LegendGroup[]
   funnel?: FunnelStep[]
-  evidence?: string[]
+  charts?: ChartGroup[]
+  evidence?: EvidenceGroup[]
   limitations?: string[]
   outputLayer?: string
   stopCode?: string
@@ -564,21 +587,187 @@ function buildFunnel(module: AnalysisModuleResult): FunnelStep[] | undefined {
   return undefined
 }
 
-/** 依据（evidence）：把后端 evidence 的已知字段转成可读行，不猜数字 */
-function buildEvidenceLines(module: AnalysisModuleResult): string[] {
-  const e = module.evidence
-  const lines: string[] = []
+/** 证据链分组说明：把后端 evidence 的已知字段拆成「数据来源 / 方法 / 口径 / 排除」可读行。只读字段，不猜数字。 */
+function evidenceGroups(e: Record<string, unknown>): EvidenceGroup[] {
+  const groups: EvidenceGroup[] = []
+  const push = (title: string, icon: string, lines: string[]) => {
+    const cleaned = lines.map((l) => l.trim()).filter(Boolean)
+    if (cleaned.length) groups.push({ title, icon, lines: cleaned })
+  }
+
+  // 坐标契约 / 坐标参考系
   const crs = obj(e.crs)
-  const analysis = str(crs.analysis)
-  const output = str(crs.output)
-  if (analysis || output) lines.push(`坐标参考系：分析 ${analysis || '—'} → 输出 ${output || '—'}`)
+  const contract = str(crs.coordinate_contract)
+  const crsLines: string[] = []
+  if (str(crs.analysis) || str(crs.output)) crsLines.push(`分析 ${str(crs.analysis) || '—'} → 输出 ${str(crs.output) || '—'}`)
+  if (contract) crsLines.push(contract)
+  push('坐标契约', '🧭', crsLines)
+
+  // 口径（日期/快照/人口口径）
+  const caliberLines: string[] = []
+  if (str(e.date_caliber)) caliberLines.push(`日期/快照口径：${str(e.date_caliber)}`)
+  if (str(e.population_caliber)) caliberLines.push(str(e.population_caliber))
+  push('数据口径', '📏', caliberLines)
+
+  // 数据来源与版本（input_versions）
+  const versions = obj(e.input_versions)
+  const versionKeys = Object.keys(versions)
+  if (versionKeys.length) {
+    const lines = versionKeys.map((key) => {
+      const v = obj(versions[key])
+      const path = str(v.path) || str(v.original_file) || key
+      const file = path.split(/[\\/]/).pop() || path
+      const hash = str(v.sha256)
+      const size = num(v.size_bytes)
+      return `${key} → ${file}${hash ? ` · ${hash.slice(0, 12)}` : ''}${size != null ? ` · ${formatInt(size)} B` : ''}`
+    })
+    push('数据来源与版本', '🗂️', lines)
+  }
+
+  // 原始数据血缘（source_audit）：兼容「多文件血缘」（按子文件分键）与「单文件扁平血缘」两种结构
+  const audit = obj(e.source_audit)
+  const auditKeys = Object.keys(audit)
+  if (auditKeys.length) {
+    const auditLine = (a: Record<string, unknown>, prefix = ''): string => {
+      const file = str(a.original_file).split(/[\\/]/).pop() || str(a.original_file)
+      const fields = Array.isArray(a.used_fields) ? a.used_fields.length : num(a.used_fields)
+      const record = num(a.original_record_count) ?? num(a.original_grid_count)
+      const inRange = num(a.in_range_records) ?? num(a.in_range_population)
+      const bits: string[] = [file ? `${file}` : '']
+      if (fields != null) bits.push(`${formatInt(fields)} 字段`)
+      if (record != null) bits.push(`源记录 ${formatInt(record)}`)
+      if (inRange != null) bits.push(`范围内 ${formatInt(inRange)}`)
+      const label = bits.filter(Boolean).join(' · ')
+      return prefix ? `${prefix}：${label}` : label
+    }
+    const isFlat = Object.prototype.hasOwnProperty.call(audit, 'original_file') ||
+      Object.prototype.hasOwnProperty.call(audit, 'original_sha256')
+    if (isFlat) {
+      const label = auditLine(audit)
+      if (label) push('原始数据血缘', '🧬', [label])
+    } else {
+      const lines = auditKeys.map((key) => auditLine(obj(audit[key]), key)).filter((l) => l.trim().length > 0)
+      push('原始数据血缘', '🧬', lines)
+    }
+  }
+
   const filters = e.filters
-  if (Array.isArray(filters) && filters.length) lines.push(`过滤规则：${filters.map(str).join(' · ')}`)
-  const aggregation = str(e.aggregation)
-  if (aggregation) lines.push(`聚合方式：${aggregation}`)
-  const classification = str(e.classification)
-  if (classification) lines.push(`分级口径：${classification}`)
-  return lines
+  if (Array.isArray(filters) && filters.length) push('过滤规则', '🔍', filters.map(str))
+  if (str(e.aggregation)) push('聚合方式', '🏗️', [str(e.aggregation)])
+  if (str(e.classification)) push('分级口径', '🏷️', [str(e.classification)])
+  if (str(e.relative_rule)) push('相对分型规则', '⚖️', [str(e.relative_rule)])
+
+  const excluded = e.excluded_inputs
+  if (Array.isArray(excluded) && excluded.length) push('排除与不可比', '🚫', excluded.map(str))
+
+  // 交叉校验（公共服务）
+  const cross = obj(e.crosscheck)
+  if (cross.enabled === true || str(cross.enabled) === 'true') {
+    const crossLines: string[] = []
+    const inside = num(cross.inside_total)
+    if (inside != null) crossLines.push(`范围内合计 ${formatInt(inside)}`)
+    const counts = obj(cross.group_counts)
+    const groupLines = Object.keys(counts).map((k) => `${k} ${formatInt(num(counts[k]) ?? 0)}`)
+    if (groupLines.length) crossLines.push(groupLines.join(' · '))
+    push('交叉校验', '✅', crossLines)
+  }
+  return groups
+}
+
+/** 公共服务四大功能组的读法（与 buildMetrics 口径一致，仅用于图表/图例读识） */
+const FACILITY_GROUP_LABELS: Record<string, string> = {
+  education_culture: '教育文化',
+  medical_health: '医疗健康',
+  sports: '体育活动',
+  convenience_emergency: '便民与应急',
+}
+
+/** 对比条形图：只把已有 stats 数字再呈一次，便于「对照」阅读，不新增计算、不引入新结论。 */
+function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
+  const stats = module.stats
+  if (module.module_id === 'activity_temporal') {
+    const types = obj(stats.day_night_types)
+    const bars = RHYTHM_ORDER.map((code) => ({
+      label: str(obj(types[code]).label) || RHYTHM_LABELS[code],
+      value: num(obj(types[code]).grid_count),
+    })).filter((b): b is ChartBar => b.value != null)
+    return [{ title: '昼夜节律 · 网格数', bars, note: '阈值以上为高、以下为低；无数据（ND）单独一列' }]
+  }
+  if (module.module_id === 'commercial_supply') {
+    const classes = obj(stats.supply_classes)
+    const bars = (['high_supply', 'low_supply'] as const).map((key) => ({
+      label: str(obj(classes[key]).label) || (key === 'high_supply' ? '高供给' : '低供给'),
+      value: num(obj(classes[key]).grid_count),
+    })).filter((b): b is ChartBar => b.value != null)
+    return [{ title: '商业供给 · 格数', bars, note: '正密度中位数以上为高供给、以下为低供给' }]
+  }
+  if (module.module_id === 'commercial_vitality') {
+    return (['supply_day_quadrants', 'supply_night_quadrants'] as const)
+      .map((key, i) => {
+        const table = obj(stats[key])
+        const bars = QUADRANT_ORDER.map((code) => ({
+          label: QUADRANT_LABELS[code],
+          value: num(obj(table[code]).grid_count),
+        })).filter((b): b is ChartBar => b.value != null)
+        return { title: i === 0 ? '昼间 格数' : '夜间 格数', bars, note: '同一四象限口径下昼/夜对照' }
+      })
+      .filter((g) => g.bars.length)
+  }
+  if (module.module_id === 'public_service') {
+    const groups = obj(stats.groups)
+    const out: ChartGroup[] = []
+    const groupBars = Object.keys(groups).map((code) => ({
+      label: str(obj(groups[code]).label) || FACILITY_GROUP_LABELS[code] || code,
+      value: num(obj(groups[code]).count),
+    })).filter((b): b is ChartBar => b.value != null)
+    if (groupBars.length) out.push({ title: '四大功能组 · 纳入点数', bars: groupBars })
+    const cellClasses = obj(stats.cell_classes)
+    const classBars = (['none', 'low', 'high'] as const).map((code) => ({
+      label: str(obj(cellClasses[code]).label) || code,
+      value: num(obj(cellClasses[code]).grid_count),
+    })).filter((b): b is ChartBar => b.value != null)
+    if (classBars.length) out.push({ title: '500m 格 · 资源分布', bars: classBars })
+    return out
+  }
+  if (module.module_id === 'population_profile') {
+    const groups = obj(stats.groups)
+    const out: ChartGroup[] = []
+    const groupBars: ChartBar[] = []
+    for (const code of ['youth', 'high_edu', 'mid_high_income'] as const) {
+      const p = num(obj(groups[code]).proportion)
+      if (p != null) groupBars.push({ label: str(obj(groups[code]).label) || code, value: p * 100, unit: '%' })
+    }
+    if (groupBars.length) out.push({ title: '群体占比（居住口径）', bars: groupBars, note: '人口加权估算，非个人身份' })
+    const home = obj(obj(stats.structure).home)
+    const work = obj(obj(stats.structure).work)
+    const eduProportion = (structure: Record<string, unknown>): number | null => {
+      const dims = Array.isArray(structure.dimensions) ? structure.dimensions : []
+      for (const d of dims) {
+        if (str(obj(d).code) !== '教育水平') continue
+        const rawCats: unknown = obj(d).categories
+        const cats: Array<Record<string, unknown>> = Array.isArray(rawCats)
+          ? (rawCats as unknown[]).map((c) => obj(c))
+          : []
+        for (const c of cats) {
+          if (str(c.label) === '本科及以上') return num(c.proportion)
+        }
+      }
+      return null
+    }
+    const homeEdu = eduProportion(home)
+    const workEdu = eduProportion(work)
+    if (homeEdu != null && workEdu != null) {
+      out.push({
+        title: '本科及以上占比 对照',
+        bars: [
+          { label: '居住人群', value: Math.round(homeEdu * 1000) / 10, unit: '%' },
+          { label: '就业人群', value: Math.round(workEdu * 1000) / 10, unit: '%' },
+        ],
+      })
+    }
+    return out
+  }
+  return []
 }
 
 /* ---------------- 板块构建 ---------------- */
@@ -643,7 +832,8 @@ function buildModuleSection(module: AnalysisModuleResult, index: number): Analys
     metrics: buildMetrics(module),
     legendGroups: buildLegendGroups(module),
     funnel: buildFunnel(module),
-    evidence: buildEvidenceLines(module),
+    charts: buildCharts(module),
+    evidence: evidenceGroups(module.evidence),
     outputLayer: module.output_layer ?? undefined,
   }
 }

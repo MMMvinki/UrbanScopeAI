@@ -2,8 +2,8 @@ import { Locate } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import type { AnalysisSection, StatMetric } from './analysisMapper'
 import { AnalysisLegend } from './AnalysisLegend'
-import type { FunnelStep } from './analysisMapper'
-import { formatInt } from './analysisMapper'
+import type { ChartGroup, EvidenceGroup, FunnelStep } from './analysisMapper'
+import { formatInt, formatNumber } from './analysisMapper'
 
 function MetricTile({ metric }: { metric: StatMetric }) {
   return (
@@ -43,17 +43,62 @@ function Funnel({ steps }: { steps: FunnelStep[] }) {
   )
 }
 
-function EvidenceBlock({ evidence }: { evidence: string[] }) {
-  if (!evidence || evidence.length === 0) return null
+function EvidenceBlock({ groups }: { groups: EvidenceGroup[] }) {
+  if (!groups || groups.length === 0) return null
   return (
-    <details className="analysis-evidence">
+    <details className="analysis-evidence" open>
       <summary>数据与方法依据</summary>
-      <ul className="analysis-evidence__list">
-        {evidence.map((line, i) => (
-          <li key={i}>{line}</li>
+      <div className="analysis-evidence__groups">
+        {groups.map((group, i) => (
+          <div className="analysis-evidence__group" key={i}>
+            <div className="analysis-evidence__group-title">
+              {group.icon ? <span className="analysis-evidence__icon" aria-hidden="true">{group.icon}</span> : null}
+              {group.title}
+            </div>
+            <ul className="analysis-evidence__list">
+              {group.lines.map((line, j) => (
+                <li key={j}>{line}</li>
+              ))}
+            </ul>
+          </div>
         ))}
-      </ul>
+      </div>
     </details>
+  )
+}
+
+/** 对比条形图：把已有 stats 数字以「对照」形式呈现（时段/类型/群体），无新增计算。 */
+function ComparisonBars({ groups }: { groups: ChartGroup[] }) {
+  if (!groups || groups.length === 0) return null
+  return (
+    <div className="analysis-charts">
+      {groups.map((group) => {
+        const max = Math.max(1, ...group.bars.map((b) => b.value))
+        return (
+          <div className="analysis-chart" key={group.title}>
+            <div className="analysis-chart__title">{group.title}</div>
+            <div className="analysis-chart__bars">
+              {group.bars.map((bar) => (
+                <div className="analysis-chart__row" key={bar.label}>
+                  <span className="analysis-chart__label" title={bar.label}>{bar.label}</span>
+                  <div className="analysis-chart__track">
+                    <div
+                      className="analysis-chart__fill"
+                      style={{ width: `${Math.max(3, (bar.value / max) * 100)}%` }}
+                    />
+                  </div>
+                  <span className="analysis-chart__value">
+                    {formatNumber(bar.value)}
+                    {bar.unit ?? ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {group.note ? <div className="analysis-chart__note">{group.note}</div> : null}
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -165,19 +210,23 @@ export function SectionCard({ section }: { section: AnalysisSection }) {
 
         {section.kind === 'module' && section.status === 'completed' && (
           <>
+            {section.summary ? (
+              <div className="analysis-conclusion">
+                <div className="analysis-card__minihead">结论</div>
+                <p className="analysis-card__conclusion">{section.summary}</p>
+              </div>
+            ) : null}
             <MetricRow metrics={section.metrics ?? []} />
+            {section.charts && section.charts.length ? <ComparisonBars groups={section.charts} /> : null}
             <div className="analysis-card__cols">
               <div className="analysis-card__main">
-                {section.summary ? (
-                  <p className="analysis-card__conclusion">{section.summary}</p>
-                ) : null}
-                <EvidenceBlock evidence={section.evidence ?? []} />
-              </div>
-              <div className="analysis-card__side">
                 {section.legendGroups && section.legendGroups.length ? (
                   <AnalysisLegend groups={section.legendGroups} />
                 ) : null}
                 {section.funnel && section.funnel.length ? <Funnel steps={section.funnel} /> : null}
+              </div>
+              <div className="analysis-card__side">
+                <EvidenceBlock groups={section.evidence ?? []} />
               </div>
             </div>
           </>
