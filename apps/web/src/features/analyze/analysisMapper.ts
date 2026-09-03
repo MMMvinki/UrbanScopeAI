@@ -448,7 +448,7 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
     const bands = obj(acc.bands)
     const list = [
       metric('范围内出入口', num(entrances.in_study_area) != null ? formatInt(num(entrances.in_study_area) as number) : null, '原始 1,159 个出入口中落入研究范围'),
-      metric('本次计算中心', num(centers.requested) != null ? formatInt(num(centers.requested) as number) : null, '按 500m 商业 POI 数降序选真实出入口'),
+      metric('本次计算中心', num(centers.requested) != null ? formatInt(num(centers.requested) as number) : null, '按 500m 商业 POI 数降序 + 300m 空间去重选取代表出入口'),
       metric('商业点总量', num(acc.total_commercial_points) != null ? formatInt(num(acc.total_commercial_points) as number) : null),
       metric('5 分钟内', num(obj(bands['5']).cumulative_count) != null ? formatInt(num(obj(bands['5']).cumulative_count) as number) : null, '真实步行等时圈内'),
       metric('10 分钟累计', num(obj(bands['10']).cumulative_count) != null ? formatInt(num(obj(bands['10']).cumulative_count) as number) : null, '含 5 分钟'),

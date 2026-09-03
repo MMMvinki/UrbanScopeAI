@@ -102,6 +102,41 @@ check("中心选取确定性", list(selected["entrance_id"]) == list(again["entr
 limited = module.select_center_entrances(entr, poi, 2)
 check("max_centers 截断", len(limited) == 2)
 
+# ── 4b) 空间去重：同一站点多出口不再同时当选（防止 5 个几乎重合的中心冒充覆盖多个节点）──
+def min_pair_dist_m(frame_4326) -> float:
+    m = frame_4326.to_crs("EPSG:32650")
+    xs, ys = m.geometry.x.to_numpy(), m.geometry.y.to_numpy()
+    best = float("inf")
+    for i in range(len(xs)):
+        for j in range(i):
+            best = min(best, ((xs[i] - xs[j]) ** 2 + (ys[i] - ys[j]) ** 2) ** 0.5)
+    return 0.0 if len(xs) < 2 else best
+
+# 一个「站」的 5 个出口挤在 ~40m 内、周围 POI 极密；另 1 个远在 ~1.03km、POI 较少。
+# 若不空间去重，前 5 名恰好全是同一个站的 5 个出口 —— 这是 73A 记录到的真实风险。
+cx, cy = 114.0800, 22.5500
+station = gpd.GeoDataFrame(
+    {
+        "entrance_id": [f"S{i}" for i in range(5)] + ["FAR"],
+        "label": [f"出入口 {i}" for i in range(5)] + ["出入口 FAR"],
+        "ref_clean": [str(i) for i in range(5)] + ["FAR"],
+        "name_clean": [""] * 6,
+    },
+    geometry=[Point(cx + i * 0.00009, cy + (i % 2) * 0.00006) for i in range(5)]
+    + [Point(cx + 0.01, cy)],
+    crs="EPSG:4326",
+)
+poi_dense = make_points(
+    [((cx, cy), "餐饮服务")] * 60 + [((cx + 0.01, cy), "购物服务")] * 6
+)
+deduped = module.select_center_entrances(station, poi_dense, 5, dedup_distance_m=300)
+check("去重后同站只选代表（≤2 且含 FAR）", len(deduped) <= 2 and "FAR" in set(deduped["entrance_id"]), str(list(deduped["entrance_id"])))
+check("去重后任意两中心 ≥ 300m", min_pair_dist_m(deduped) >= 300.0 - 1e-6, f"min={min_pair_dist_m(deduped):.1f}m")
+nodedup = module.select_center_entrances(station, poi_dense, 5, dedup_distance_m=0)
+check("去重关闭时前 5 会是同站出口（证明守卫必要）", set(nodedup["entrance_id"]) == {f"S{i}" for i in range(5)} and len(nodedup) == 5, str(list(nodedup["entrance_id"])))
+tighter = module.select_center_entrances(station, poi_dense, 5, dedup_distance_m=1200)
+check("大去重距离进一步收敛", "FAR" not in set(tighter["entrance_id"]) and len(tighter) == 1, str(list(tighter["entrance_id"])))
+
 # ── 5) 累计统计：5 ≤ 10 ≤ 15，15 外 = 总量 - 15 ──
 from shapely.geometry import box  # noqa: E402
 
@@ -147,6 +182,17 @@ check("出入口标签无 nan", not entrances["label"].str.contains("nan", na=Fa
 check("出入口标签均非空", entrances["label"].str.strip().ne("").all())
 check("出入口输出 CRS = EPSG:4326", str(entrances.crs) == "EPSG:4326")
 check("模块输出 CRS 常量 = EPSG:4326", module.OUTPUT_CRS == "EPSG:4326")
+
+# 真实数据空间去重：默认 300m 去重下选出的真实中心必须相互分散（防止再次选出一组近重合出口）
+commercial_path = module._resolve_path(repo_root, None, module.DEFAULT_COMMERCIAL)
+link_path = module._resolve_path(repo_root, None, module.DEFAULT_COMMERCIAL_LINK)
+boundary_m = study.to_crs("EPSG:32650").geometry.union_all()
+real_poi = module.load_classified_commercial_points(commercial_path, link_path, boundary_m)
+real_selected = module.select_center_entrances(entrances, real_poi, 5)
+check("真实数据范围内分类商业点 = 61186", len(real_poi) == 61186)
+check("真实去重中心数 ≤ 5", len(real_selected) <= 5)
+_real_min = min_pair_dist_m(real_selected)
+check("真实去重后任意两中心 ≥ 300m", _real_min >= 300.0 - 1e-6, f"min={_real_min:.1f}m")
 
 # ── 7) Mapbox 失败诚实停止（monkeypatch 请求失败，不碰 network）──
 orig_call = module._call_isochrone

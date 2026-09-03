@@ -42,6 +42,10 @@ DEFAULT_SUBWAY = "../04-乐活大道GIS数据/00-原始数据/专项资源/地�
 
 ISOCHRONE_MINUTES = [5, 10, 15]
 DEFAULT_MAX_CENTERS = 5
+# 自动选中心的代表出入口去重距离（米）：同一地铁站的多个出入口通常相距 50–200 m，
+# 站与站沿街区一般 ≥ 400–500 m；300 m 能把同一站的多出口收敛为一个代表点，又不会把
+# 相邻两站并掉。实测 300 m 与 350 m 选出同一组代表出入口（结果对阈值不敏感）。
+DEFAULT_DEDUP_DISTANCE_M = 300
 ISOCHRONE_PROFILE = "walking"
 
 ENTRANCE_LAYER_ID = "subway_entrance_study"
@@ -177,14 +181,22 @@ def select_center_entrances(
     entrances_4326: gpd.GeoDataFrame,
     poi_4326: gpd.GeoDataFrame,
     max_centers: int,
+    dedup_distance_m: int = DEFAULT_DEDUP_DISTANCE_M,
 ) -> gpd.GeoDataFrame:
-    """确定性选取最多 max_centers 个真实出入口：按 500 米直线范围商业 POI 数降序。
+    """确定性选取最多 max_centers 个真实出入口：按 500 米商业 POI 数降序 + 空间去重。
 
-    每个中心都是真实出入口几何（不是任意几何中心）；超出硬上限时截断到 max_centers，
-    绝不把全范围 176 个出入口全部送入 Mapbox。
+    每个候选仍按「500 米直线范围内商业 POI 数」从高到低评估；每选中一个代表出入口，
+    就跳过与它直线距离 < ``dedup_distance_m`` 的其他候选，保证选出的中心在空间上分散，
+    不会让同一地铁站的多个出入口同时当选、造成「看似覆盖多个轨交节点」的假象。
+
+    每个中心都是真实出入口几何（不是任意几何中心，也不是插值/聚合出的虚拟点）；
+    超出硬上限时截断到 max_centers，绝不把全范围出入口全部送入 Mapbox。
+    该结果只可称为「空间去重后的代表出入口」，不是权威地铁站归属。
     """
     if max_centers <= 0:
         raise AccessibilityError("max_centers 必须为正整数")
+    if dedup_distance_m < 0:
+        raise AccessibilityError("dedup_distance_m 必须 >= 0")
     entrances_m = entrances_4326.to_crs(ANALYSIS_CRS)
     poi_m = poi_4326.to_crs(ANALYSIS_CRS)
     sindex = poi_m.sindex
@@ -197,10 +209,21 @@ def select_center_entrances(
             continue
         inside = poi_m.iloc[possible].geometry.within(buf)
         counts.append(int(inside.sum()))
-    result = entrances_4326.copy()
-    result["poi_500m"] = counts
-    result = result.sort_values("poi_500m", ascending=False, kind="stable").head(max_centers)
-    return result.reset_index(drop=True)
+    ranked = entrances_4326.copy()
+    ranked["poi_500m"] = counts
+    ranked = ranked.sort_values(["poi_500m", "entrance_id"], ascending=[False, True], kind="stable")
+    picked_indices: list[int] = []
+    picked_pts: list[Any] = []
+    for row_index, geom in zip(ranked.index, ranked.geometry):
+        if len(picked_indices) >= max_centers:
+            break
+        pt_m = gpd.GeoSeries([geom], crs=OUTPUT_CRS).to_crs(ANALYSIS_CRS).iloc[0]
+        if any(pt_m.distance(p) < dedup_distance_m for p in picked_pts):
+            continue
+        picked_indices.append(row_index)
+        picked_pts.append(pt_m)
+    result = ranked.loc[picked_indices].reset_index(drop=True)
+    return result
 
 
 def _cat_counts(frame: gpd.GeoDataFrame) -> dict[str, int]:
@@ -297,6 +320,12 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     if max_centers > 5:
         # 硬上限：超过 5 个直接停止，避免长时间无反馈的外部请求。
         raise AccessibilityError("max_centers 硬上限为 5，请缩小选择范围或明确选择 1–5 个出入口")
+    try:
+        dedup_distance_m = int(params.get("dedup_distance_m", DEFAULT_DEDUP_DISTANCE_M))
+    except (TypeError, ValueError):
+        raise AccessibilityError("dedup_distance_m 必须为整数")
+    if dedup_distance_m < 0:
+        raise AccessibilityError("dedup_distance_m 必须 >= 0")
 
     study = gpd.read_file(study_path)
     if study.crs is None:
@@ -316,8 +345,8 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     # 2) 地铁出入口（研究范围内，清理标签）
     entrances = load_entrances(subway_path, boundary_4326)
 
-    # 3) 确定性选取最多 5 个真实出入口中心
-    centers = select_center_entrances(entrances, poi, max_centers)
+    # 3) 确定性选取最多 5 个真实出入口中心（按 500m 商业 POI 数降序 + 空间去重）
+    centers = select_center_entrances(entrances, poi, max_centers, dedup_distance_m)
 
     # 4) Mapbox 真实步行等时圈（复用 isochrone 的请求实现）
     if not _mapbox_token():
@@ -408,7 +437,12 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             "in_study_area": int(len(entrances)),
         },
         "centers": {
-            "rule": "按 500 米直线范围内商业 POI 数降序选取真实出入口，最多 5 个",
+            "rule": (
+                "按 500 米直线范围内商业 POI 数从高到低评估真实出入口，每选中一个即跳过"
+                f"与它直线距离小于 {dedup_distance_m} 米的其他候选（空间去重），最多 {max_centers} 个"
+            ),
+            "dedup_distance_m": dedup_distance_m,
+            "dedup_note": "代表出入口按空间去重选取，只作请求中心，不作地铁站名归属",
             "requested": int(len(centers)),
             "success": len(success_centers),
             "failed": len(failed_centers),
@@ -443,12 +477,15 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
             "subway entrance within candidate study boundary",
         ],
         "aggregation": (
+            "请求中心 = 按 500m 商业 POI 数降序 + "
+            f"{dedup_distance_m} 米空间去重选取的代表出入口；"
             "等时圈 = Mapbox 真实路网步行 5/10/15 分钟多边形；同分钟档跨中心取并集，"
             "相邻档相减成环带；累计统计 = 商业点在完整并集多边形内的 within 计数"
         ),
         "limitations": [
             "等时圈来自 Mapbox 真实路网步行（walking），非直线圆形缓冲",
             "本次只计算选定的 N 个出入口/出入口组，不代表研究范围全部出入口的覆盖",
+            "自动中心是空间去重后的代表出入口，不是权威地铁站归属",
             "出入口编号（C/D1 等）只作标识，不作为地铁站名",
             "商业点数量不等于营业额、经营质量或消费等级",
             "等时圈未叠加地铁站名归属（OSM 字段质量未核验前不上图做站名标注）",
@@ -534,16 +571,14 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
 
     n_centers = len(success_centers)
     band = accessibility_stats["bands"]
-    conclusion_parts = [
-        f"本次真实计算 {n_centers} 个地铁出入口（或出入口组）"
-    ]
-    if failed_centers:
-        conclusion_parts.append(f"，另有 {len(failed_centers)} 个请求失败")
-    conclusion_parts.append("的 5/10/15 分钟真实步行等时圈")
     summary = (
         f"商业 × 轨交真实步行可达性已完成：研究范围内 {len(entrances)} 个地铁出入口、"
-        f"{poi_count} 个分类商业点；选取 {n_centers} 个真实出入口计算 Mapbox walking "
-        f"5/10/15 分钟等时圈；5 分钟内商业 {band.get('5', {}).get('cumulative_count', 0)} 个、"
+        f"{poi_count} 个分类商业点；按 500 米商业 POI 数降序 + {dedup_distance_m} 米空间去重"
+        f"选取 {len(centers)} 个代表出入口计算 Mapbox walking 5/10/15 分钟等时圈"
+        f"（成功 {n_centers} 个"
+        + (f"，失败 {len(failed_centers)} 个" if failed_centers else "")
+        + "）；5 分钟内商业 "
+        f"{band.get('5', {}).get('cumulative_count', 0)} 个、"
         f"10 分钟累计 {band.get('10', {}).get('cumulative_count', 0)} 个、"
         f"15 分钟累计 {band.get('15', {}).get('cumulative_count', 0)} 个。"
         + ("（真实路网请求部分失败，详见限制说明。）" if failed_centers else "")
