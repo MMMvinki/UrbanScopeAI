@@ -280,12 +280,12 @@ def route_analysis_request(question: str) -> AnalysisRoute | None:
         return AnalysisRoute(
             intent_id=COMPREHENSIVE_INTENT,
             route_rule="R-COMPREHENSIVE",
-            route_reason="命中项目级‘综合现状/全面分析/现有数据能做什么’表达，按活动、商业、综合诊断、公共服务与人口·就业画像五个板块检查并执行。",
+            route_reason="命中项目级‘综合现状/全面分析/现有数据能做什么’表达，按活动、商业、综合诊断、公共服务、人口·就业画像与全区地铁可达六个板块检查并执行。",
             requested_modules=(
-                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE,
+                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE, RAIL_NETWORK_MODULE,
             ),
             executable_modules=(
-                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE,
+                ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE, RAIL_NETWORK_MODULE,
             ),
         )
 

@@ -22,6 +22,8 @@ from app.agent.comprehensive_analysis import (
     POPULATION_SKILL,
     PUBLIC_SERVICE_MODULE,
     PUBLIC_SERVICE_SKILL,
+    RAIL_NETWORK_MODULE,
+    RAIL_NETWORK_SKILL,
     execute_analysis_route,
     route_analysis_request,
 )
@@ -67,9 +69,9 @@ overall_plan = plan_for("根据现有数据做一次项目全面现状分析")
 overall_skill_ids = [step.detail or "" for step in overall_plan.plan if step.tool == "execute_skill_script"]
 check("项目全面现状分析路由", overall_plan.intent_id == COMPREHENSIVE_INTENT)
 check(
-    "全面分析形成五个核心板块计划",
-    len(overall_skill_ids) == 5
-    and all(skill in " ".join(overall_skill_ids) for skill in (ACTIVITY_SKILL, COMMERCIAL_SKILL, DIAGNOSIS_SKILL, PUBLIC_SERVICE_SKILL, POPULATION_SKILL)),
+    "全面分析形成六个核心板块计划",
+    len(overall_skill_ids) == 6
+    and all(skill in " ".join(overall_skill_ids) for skill in (ACTIVITY_SKILL, COMMERCIAL_SKILL, DIAGNOSIS_SKILL, PUBLIC_SERVICE_SKILL, POPULATION_SKILL, RAIL_NETWORK_SKILL)),
 )
 
 target_plan = plan_for("请根据当前已有数据，对项目各方面进行一次尽可能完整的现状分析。")
@@ -158,8 +160,8 @@ def fake_success_runner(skill_id: str, params: dict[str, Any], *, ctx: Any = Non
 overall_route = route_analysis_request("根据现有数据做综合现状分析")
 assert overall_route is not None
 structured = execute_analysis_route(overall_route, run_skill=fake_success_runner).structured_analysis
-check("综合结果包含稳定顶层字段", structured is not None and structured.requested_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE])
-check("综合结果五个板块全部完成", structured is not None and structured.ready_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE])
+check("综合结果包含稳定顶层字段", structured is not None and structured.requested_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE, RAIL_NETWORK_MODULE])
+check("综合结果六个板块全部完成", structured is not None and structured.ready_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE, RAIL_NETWORK_MODULE])
 check(
     "每个板块含运行标识/层级/统计/证据/限制/图层",
     structured is not None
@@ -235,13 +237,13 @@ check(
 )
 
 
-# 4) 真实综合运行：必须分别产出五个 Skill 的 run、地图、统计和证据。
+# 4) 真实综合运行：必须分别产出六个 Skill 的 run、地图、统计和证据。
 real_result = execute(request_from_plan("根据现有数据做一次项目全面现状分析"))
 real_analysis = real_result.structured_analysis
 check(
-    "真实综合分析五个板块完成",
+    "真实综合分析六个板块完成",
     real_analysis is not None
-    and real_analysis.ready_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE]
+    and real_analysis.ready_modules == [ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE, RAIL_NETWORK_MODULE]
     and not real_analysis.blocked_modules,
 )
 check(
