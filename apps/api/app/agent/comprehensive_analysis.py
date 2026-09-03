@@ -149,8 +149,85 @@ _RAIL_NETWORK_TERMS = (
 )
 
 
+# ── 「主题组」全家桶（A）：区域语义 + 主题名词 → 命中对应组按序跑多个模块 ──
+_AREA_TERMS = (
+    "区域", "研究范围", "片区", "这个区", "当地", "候选范围", "范围内", "这片", "区内", "本区", "这里",
+)
+_THEME_COMMERCIAL = ("商业", "商铺", "店铺", "商店", "网点")
+_THEME_COMMERCIAL_PRECISE = ("供给", "数量", "密度", "集聚", "聚集", "格局", "分布", "画像")
+_THEME_PUBLIC = ("公共服务", "公共设施")
+_THEME_PUBLIC_PRECISE = ("设施", "资源分布", "画像", "分布")
+_THEME_POPULATION = ("人口", "人群", "居民")
+_THEME_POPULATION_PRECISE = _POPULATION_TERMS  # 精确问法（画像/结构/分布/职住比…）仍走单板块
+_THEME_ACTIVITY = ("活动", "活力")
+_THEME_ACTIVITY_PRECISE = (
+    "时序", "客流", "匹配", "昼夜", "画像", "数量", "白天", "晚上", "工作日", "周末", "规律", "错位",
+)
+_THEME_RAIL = ("地铁", "轨交", "轨道交通", "可达")
+_THEME_RAIL_PRECISE = _RAIL_NETWORK_TERMS + ("等时圈", "出入口", "步行可达", "覆盖率", "覆盖", "站")
+
+
 def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
+
+
+def _theme_route(q: str) -> AnalysisRoute | None:
+    """区域语义 + 主题名词 → 主题组路由；含精确单板块标记时放行（不误伤精确问法）。"""
+    if not _contains_any(q, _AREA_TERMS):
+        return None
+    themes = (
+        (
+            "commercial",
+            "R-THEME-COMMERCIAL",
+            _THEME_COMMERCIAL,
+            _THEME_COMMERCIAL_PRECISE,
+            (COMMERCIAL_MODULE, DIAGNOSIS_MODULE, RAIL_NETWORK_MODULE),
+            "商业",
+        ),
+        (
+            "public_service",
+            "R-THEME-PUBLIC-SERVICE",
+            _THEME_PUBLIC,
+            _THEME_PUBLIC_PRECISE,
+            (PUBLIC_SERVICE_MODULE,),
+            "公共服务",
+        ),
+        (
+            "population",
+            "R-THEME-POPULATION",
+            _THEME_POPULATION,
+            _THEME_POPULATION_PRECISE,
+            (POPULATION_MODULE,),
+            "人口",
+        ),
+        (
+            "activity",
+            "R-THEME-ACTIVITY",
+            _THEME_ACTIVITY,
+            _THEME_ACTIVITY_PRECISE,
+            (ACTIVITY_MODULE,),
+            "活动",
+        ),
+        (
+            "reachability",
+            "R-THEME-REACHABILITY",
+            _THEME_RAIL,
+            _THEME_RAIL_PRECISE,
+            (RAIL_NETWORK_MODULE,),
+            "地铁可达",
+        ),
+    )
+    for key, rule, broad, precise, modules, name in themes:
+        if _contains_any(q, broad) and not _contains_any(q, precise):
+            label = "，".join(MODULE_SPECS[m].label for m in modules if m in MODULE_SPECS)
+            return AnalysisRoute(
+                intent_id=f"theme-{key}",
+                route_rule=rule,
+                route_reason=f"命中区域语义 + 「{name}」主题，选择{name}主题组按序执行：{label}（有数据才跑、缺前置按板块阻断）。",
+                requested_modules=modules,
+                executable_modules=modules,
+            )
+    return None
 
 
 def route_analysis_request(question: str) -> AnalysisRoute | None:
@@ -177,6 +254,12 @@ def route_analysis_request(question: str) -> AnalysisRoute | None:
                 ACTIVITY_MODULE, COMMERCIAL_MODULE, DIAGNOSIS_MODULE, PUBLIC_SERVICE_MODULE, POPULATION_MODULE,
             ),
         )
+
+    # 主题组（全家桶）先于纯单板块：区域语义 + 主题名词 → 整组按序跑；精确问法不含区域/含
+    # 单板块标记时放行到下面单板块，不误伤（“这个区域的商业”→“商业组”，而非 R-COMMERCIAL-SUPPLY）。
+    _theme = _theme_route(q)
+    if _theme is not None:
+        return _theme
 
     # 人口·就业画像：有真实 Skill，按常住数量 + 画像口径执行（不降级）。
     if _contains_any(q, _POPULATION_TERMS):

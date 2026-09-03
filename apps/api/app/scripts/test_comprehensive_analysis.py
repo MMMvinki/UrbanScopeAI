@@ -86,6 +86,31 @@ check(
 # C11：口语问句「人口就业/职住」也命中人口·就业，不被通用门2 拦走
 check("人口就业口语路由", plan_for("分析片区内的人口就业与职住比情况").intent_id == POPULATION_SKILL)
 check("职住比问句路由", plan_for("看看这个片区的职住比").intent_id == POPULATION_SKILL)
+
+# 主题组（全家桶）：区域语义 + 主题名词 → R-THEME-*；精确问法不被误伤
+def _rule(text: str) -> str | None:
+    rt = route_analysis_request(text)
+    return rt.route_rule if rt else None
+
+def _mods(text: str) -> list[str]:
+    rt = route_analysis_request(text)
+    return list(rt.requested_modules) if rt else []
+
+check("主题-商业 全家桶路由", _rule("我要分析这个区域的商业") == "R-THEME-COMMERCIAL")
+check(
+    "主题-商业 模块顺序=供给→活力→全网可达",
+    _mods("我要分析这个区域的商业") == ["commercial_supply", "commercial_vitality", "rail_network_reachability"],
+)
+check("主题-公共服务", _rule("看看这个研究范围的公共服务") == "R-THEME-PUBLIC-SERVICE")
+check("主题-人口", _rule("这个片区的人口大致情况") == "R-THEME-POPULATION")
+check("主题-活动", _rule("这个区域的活动大致什么样") == "R-THEME-ACTIVITY")
+check("主题-可达", _rule("这个区域的地铁可达性如何") == "R-THEME-REACHABILITY")
+# 回归：精确/模糊单板块问法仍走单板块（区域含 precise 标记 / 无区域主题词）
+check("回归-商业供给单板块(集聚precise)", _rule("这里的店铺哪里密，哪些地方比较集聚？") == "R-COMMERCIAL-SUPPLY")
+check("回归-商业供给单板块(无区域)", _rule("分析商业供给格局") == "R-COMMERCIAL-SUPPLY")
+check("回归-人口画像单板块(区域+画像)", _rule("请给这个片区做一份人口画像") == "R-POPULATION-PROFILE")
+check("回归-活动规律单板块(区域+规律)", _rule("帮我看看这个片区白天和晚上、工作日和周末的活动规律") == "R-ACTIVITY-TEMPORAL")
+check("回归-全网可达单板块(区域+可达率precise)", _rule("请分析候选研究范围的全区地铁可达率与难达区") == "R-RAIL-NETWORK-REACHABILITY")
 # C11 补漏：词表全量问法都进人口·就业，且 plan 无阻断、单步真 Skill
 POPULATION_QUESTION_ROUTES = [
     "请做一份人口画像", "人口分布怎么看", "人口就业与职住比", "职住比是多少",
