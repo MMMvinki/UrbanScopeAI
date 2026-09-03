@@ -1065,14 +1065,23 @@ const FACILITY_GROUP_LABELS: Record<string, string> = {
 function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
   const stats = module.stats
   if (module.module_id === 'activity_temporal') {
-    const density = densityBandChart(module)
-    if (density) return [density]
+    // 主图=昼间活力渐变（见 D2）；右卡另给一张节律类型网格数，把昼/夜口径分开可读、成对表达
     const types = obj(stats.day_night_types)
-    const bars = RHYTHM_ORDER.map((code) => ({
+    const rhythmBars: ChartBar[] = RHYTHM_ORDER.map((code) => ({
       label: str(obj(types[code]).label) || RHYTHM_LABELS[code],
       value: num(obj(types[code]).grid_count),
     })).filter((b): b is ChartBar => b.value != null)
-    return [{ title: '昼夜节律 · 网格数', bars, note: '阈值以上为高、以下为低；无数据（ND）单独一列' }]
+    const out: ChartGroup[] = []
+    const density = densityBandChart(module)
+    if (density) out.push(density)
+    if (rhythmBars.length) {
+      out.push({
+        title: '昼夜节律 · 网格数',
+        bars: rhythmBars,
+        note: '昼高夜低≈商务潮汐候选、昼低夜高≈生活消费候选（相对判断，非因果）；无数据（ND）单独一列',
+      })
+    }
+    return out
   }
   if (module.module_id === 'commercial_supply') {
     const out: ChartGroup[] = []
@@ -1097,18 +1106,27 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
     return out
   }
   if (module.module_id === 'commercial_vitality') {
-    const density = densityBandChart(module)
-    if (density) return [density]
-    return (['supply_day_quadrants', 'supply_night_quadrants'] as const)
+    // 昼/夜成对对照：商业×活力默认主图=昼间活力渐变，右卡同时给昼/夜两幅四象限，成对可读
+    const quadGroups: ChartGroup[] = (
+      ['supply_day_quadrants', 'supply_night_quadrants'] as const
+    )
       .map((key, i) => {
         const table = obj(stats[key])
         const bars = QUADRANT_ORDER.map((code) => ({
           label: QUADRANT_LABELS[code],
           value: num(obj(table[code]).grid_count),
         })).filter((b): b is ChartBar => b.value != null)
-        return { title: i === 0 ? '昼间 格数' : '夜间 格数', bars, note: '同一四象限口径下昼/夜对照' }
+        return {
+          title: i === 0 ? '昼间 · 商业×活力' : '夜间 · 商业×活力',
+          bars,
+          note: '同一四象限口径下昼/夜对照；「高活力·低供给（错配候选）」为空间共现判断，非因果',
+        }
       })
       .filter((g) => g.bars.length)
+    const out: ChartGroup[] = [...quadGroups]
+    const density = densityBandChart(module)
+    if (density) out.unshift(density)
+    return out
   }
   if (module.module_id === 'public_service') {
     const groups = obj(stats.groups)
