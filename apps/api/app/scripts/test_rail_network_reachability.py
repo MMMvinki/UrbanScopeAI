@@ -85,7 +85,85 @@ scenario2 = route_analysis_request(
 )
 check("72D 场景 2 仍走 single-corridor", scenario2 is not None and scenario2.route_rule == "R-COMMERCIAL-RAIL-ACCESSIBILITY", str(getattr(scenario2, "route_rule", None)))
 
-# 5) 全失败诚实停止语义（不调网络：直接验证 IsochroneAllFailed 存在与停止码路径）
+# 5) A1 轨道服务盲区叠加：住宅本体规则 + 合成米制几何（确定性，不调网络）
+rs = module._ro
+check(
+    "住宅本体规则",
+    rs.is_residential_layer("R2二类居住用地")
+    and rs.is_residential_layer("C1+R2商业+居住用地")
+    and rs.is_residential_layer("R4乡村居住自留用地")
+    and not rs.is_residential_layer("R6配套设施用地")
+    and not rs.is_residential_layer("R22二类幼托用地")
+    and not rs.is_residential_layer("R8住宅区绿地")
+    and not rs.is_residential_layer("C2商业用地"),
+)
+boundary = box(0.0, 0.0, 4000.0, 4000.0)
+cum15 = box(500.0, 500.0, 3500.0, 3500.0)
+cum = {5: box(1000.0, 1000.0, 3000.0, 3000.0), 10: box(800.0, 800.0, 3200.0, 3200.0), 15: cum15}
+hard = boundary.difference(cum15)
+res = gpd.GeoDataFrame(
+    {"Layer": ["R2二类居住用地"] * 4},
+    geometry=[
+        box(2000.0, 2000.0, 2500.0, 2500.0),  # cum5
+        box(600.0, 600.0, 900.0, 900.0),  # cum10（跨环）
+        box(3700.0, 3700.0, 3950.0, 3950.0),  # hard
+        box(0.0, 0.0, 300.0, 300.0),  # hard
+    ],
+    crs="EPSG:32650",
+)
+pop = gpd.GeoDataFrame(
+    {"home_count": [100, 100, 50, 50], "work_count": [80, 80, 40, 40]},
+    geometry=[
+        Point(2250.0, 2250.0), Point(700.0, 700.0),
+        Point(3800.0, 3800.0), Point(150.0, 150.0),
+    ],
+    crs="EPSG:32650",
+)
+extra = rs.residential_blindspot(res_gdf_m=res, pop_gdf_m=pop, boundary_m=boundary, hard_m=hard, cum_by_minute=cum)
+check("盲区居住覆盖率随分钟单调", extra["coverage_pct"]["5"] < extra["coverage_pct"]["10"] < extra["coverage_pct"]["15"])
+check("盲区居住面积>0", extra["blind_km2"] > 0 and extra["blind_pct"] > 0)
+check("盲区人口分区守恒", extra["conservation"]["home_15_plus_blind"] == extra["conservation"]["home_total"] and extra["conservation"]["work_15_plus_blind"] == extra["conservation"]["work_total"])
+check("盲区面积守恒容差<0.5%", extra["conservation"]["area_delta_pct"] < 0.5)
+
+# 6) A1 真实数据确定性（rail 几何取 skill 缓存 geojson + 用地 shp + 人口格；文件齐才跑，否则 SKIP）
+REPO_ROOT = API_ROOT.parent.parent
+land_real = REPO_ROOT.parent / "04-乐活大道GIS数据" / "04-恢复数据" / "商业文化部分（发兆杨）1(全量用地).mpk解包" / "commondata" / "数据处理" / "用地地块_范围内Export_Output.shp"
+f_pop = API_ROOT / "app" / "workspace" / "data" / "layers" / "population_workforce_profile_100m.json"
+cache_hits = sorted((API_ROOT / "app" / "workspace" / "data" / "cache").glob("rail_network_reachability_*.json"))
+if cache_hits and f_pop.is_file() and land_real.is_file():
+    import json as _json
+    import geopandas as _gpd
+
+    from shapely.geometry import shape
+
+    cached = _json.loads(cache_hits[-1].read_text(encoding="utf-8"))
+    gj = cached.get("geojson") or {}
+    study = _gpd.read_file(REPO_ROOT / "docs" / "workstreams" / "analysis-foundation" / "data" / "candidate_lohas_study_area.geojson").to_crs("EPSG:32650")
+    bm = study.geometry.union_all()
+    bands_gj = (gj.get("rail_network_walking_bands") or {}).get("features") or []
+    band_geoms = [
+        (int(f["properties"]["minute"]), shape(f["geometry"]))
+        for f in bands_gj
+        if f.get("geometry") and f.get("properties", {}).get("minute") is not None
+    ]
+    hard_gj = (gj.get("rail_network_hard_to_reach") or {}).get("features") or []
+    hard_m = shape(hard_gj[0]["geometry"]) if hard_gj else None
+    if band_geoms and hard_m is not None:
+        cum_m = rs.cum_geoms_from_bands(band_geoms, bm)
+        res_real = rs.load_residential_land(land_real)
+        pop_real = rs.load_population_grid(f_pop)
+        real = rs.residential_blindspot(res_gdf_m=res_real, pop_gdf_m=pop_real, boundary_m=bm, hard_m=hard_m, cum_by_minute=cum_m)
+        check("A1 真实：住宅本体块数", real["residential_parcels"] == 601, f"parcels={real['residential_parcels']}")
+        check("A1 真实：居住面积量级", 5.9 < real["residential_total_km2"] < 6.15, f"{real['residential_total_km2']}")
+        check("A1 真实：覆盖率单调", real["coverage_pct"]["5"] < real["coverage_pct"]["10"] < real["coverage_pct"]["15"])
+        check("A1 真实：盲区面积>0 且守恒容差", real["blind_km2"] > 0 and real["conservation"]["area_delta_pct"] < 0.5)
+        check("A1 真实：盲区人口守恒", real["conservation"]["home_15_plus_blind"] == real["conservation"]["home_total"])
+    else:
+        print("SKIP A1 真实数据断言（rail 缓存 geojson 不完整）")
+else:
+    print("SKIP A1 真实数据断言（缺 rail 缓存/用地/人口文件）")
+
+# 7) 全失败诚实停止语义（不调网络：直接验证 IsochroneAllFailed 存在与停止码路径）
 check("全失败异常类存在", hasattr(module, "IsochroneAllFailed") and issubclass(module.IsochroneAllFailed, RuntimeError))
 
 print("ALL PASS")

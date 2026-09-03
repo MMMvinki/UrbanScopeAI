@@ -54,6 +54,14 @@
         "type": "boolean",
         "default": true,
         "description": "命中预计算缓存则秒开（输入文件 hash 校验），否则实时请求 Mapbox"
+      },
+      "land_use_path": {
+        "type": "string",
+        "description": "A1 轨道服务盲区：居住用地 shp（EPSG:4547，Layer 字段含用途编码）；默认 ../04-乐活大道GIS数据/04-恢复数据/商业文化部分（发兆杨）1(全量用地).mpk解包/commondata/数据处理/用地地块_范围内Export_Output.shp"
+      },
+      "population_grid_path": {
+        "type": "string",
+        "description": "A1 轨道服务盲区：人口·就业 100m 格 geojson（home_count/work_count，EPSG:4326）；默认 apps/api/app/workspace/data/layers/population_workforce_profile_100m.json"
       }
     },
     "required": []

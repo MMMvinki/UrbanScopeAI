@@ -576,6 +576,12 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
       if (km2 == null || rate == null) return null
       return `${formatNumber(km2)} km² · ${formatNumber(rate)}%`
     }
+    // A1：居住用地 / 人口·就业 的轨道覆盖与难达盲区（rail run 内叠加，读 stats.residential_blindspot）
+    const rb = obj(stats.residential_blindspot)
+    const rbKm = (m: string): number | null => num(obj(rb.coverage_km2)[m])
+    const rbPct = (m: string): number | null => num(obj(rb.coverage_pct)[m])
+    const fmtAreaRate = (a: number | null, b: number | null): string | null =>
+      a != null && b != null ? `${formatNumber(a)} km² · ${formatNumber(b)}%` : null
     const list = [
       metric('研究范围', area != null ? formatArea(area) : null),
       metric('范围内出入口', num(ent.in_study_area) != null ? formatInt(num(ent.in_study_area) as number) : null, '全部真实出入口（1,159 个原始中落入研究范围）'),
@@ -584,6 +590,12 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
       metric('10 分钟累计覆盖', cov(10)),
       metric('15 分钟累计覆盖', cov(15)),
       metric('难达区', hard != null && hardRate != null ? `${formatNumber(hard)} km² · ${formatNumber(hardRate)}%` : null, '15 分钟步行未覆盖'),
+      metric('居住用地 · 研究区内', num(rb.residential_total_km2) != null ? formatArea(num(rb.residential_total_km2) as number) : null, 'Layer 含居住 / R1–R4 住宅本体（共 601 块）'),
+      metric('居住 ≤5 分钟可及', fmtAreaRate(rbKm('5'), rbPct('5')), '累计 · 占研究区内居住面积'),
+      metric('居住 ≤10 累计', fmtAreaRate(rbKm('10'), rbPct('10'))),
+      metric('居住 ≤15 累计', fmtAreaRate(rbKm('15'), rbPct('15'))),
+      metric('居住 · 难达(>15)', rb != null ? fmtAreaRate(num(rb.blind_km2), num(rb.blind_pct)) : null, '盲区居住面积 / 占居住面积'),
+      metric('难达区人口/就业', num(rb.home_blind) != null && num(rb.work_blind) != null ? `${formatInt(num(rb.home_blind) as number)} / ${formatInt(num(rb.work_blind) as number)}` : null, '盲区内居住 / 就业人口'),
       metric('商业点 15 分钟可及', num(obj(bands['15']).cumulative_count) != null ? formatInt(num(obj(bands['15']).cumulative_count) as number) : null, '研究范围内商业点在 15 分钟并集内'),
     ]
     return list.filter((m): m is StatMetric => m != null)
@@ -679,6 +691,14 @@ function buildConclusion(module: AnalysisModuleResult): string | null {
     const hard = num(stats.hard_to_reach_km2)
     const hardRate = num(stats.hard_to_reach_rate)
     push(hard != null && hardRate != null ? `难达区 ${formatNumber(hard)} km²（${formatNumber(hardRate)}%）` : null)
+    // A1：难达区居住用地与人口·就业
+    const rb = obj(stats.residential_blindspot)
+    const bKm = num(rb.blind_km2)
+    const bPct = num(rb.blind_pct)
+    const bHome = num(rb.home_blind)
+    const bWork = num(rb.work_blind)
+    push(bKm != null && bPct != null ? `其中盲区（>15 分钟）居住用地 ${formatNumber(bKm)} km²（占研究区内居住 ${formatNumber(bPct)}%）` : null)
+    push(bHome != null && bWork != null ? `盲区仍含约 ${formatInt(bHome)} 居住人口 / ${formatInt(bWork)} 就业人口` : null)
   }
   const text = clause.join('；').replace(/；（/g, '（').trim()
   return text ? `${text}。` : null
@@ -1245,6 +1265,34 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
       .map((c) => ({ label: c, value: num(totalByCat[c]) as number }))
     if (catBars.length) {
       out.push({ title: '≤15 分钟可及商业（分类）', bars: catBars })
+    }
+    // A1：居住用地覆盖率 + 盲区人口/就业
+    const rb = obj(stats.residential_blindspot)
+    const covP = obj(rb.coverage_pct)
+    const resPctItems: Array<{ label: string; value: number | null }> = [
+      { label: '≤5 分钟', value: num(covP['5']) },
+      { label: '≤10 分钟', value: num(covP['10']) },
+      { label: '≤15 分钟', value: num(covP['15']) },
+      { label: '难达>15', value: num(rb.blind_pct) },
+    ]
+    const resPctBars: ChartBar[] = resPctItems.reduce<ChartBar[]>((acc, it) => {
+      if (it.value != null) acc.push({ label: it.label, value: it.value })
+      return acc
+    }, [])
+    if (resPctBars.length) {
+      const resTotal = num(rb.residential_total_km2)
+      out.push({
+        title: '居住用地覆盖率（%）',
+        bars: resPctBars,
+        unit: '%',
+        note: `居住面积 ∩ 分钟带 / 研究区内居住面积（共 ${resTotal != null ? formatNumber(resTotal) : '—'} km²）；难达>15=盲区`,
+      })
+    }
+    const blindBars: ChartBar[] = []
+    if (num(rb.home_blind) != null) blindBars.push({ label: '居住人口', value: num(rb.home_blind) as number })
+    if (num(rb.work_blind) != null) blindBars.push({ label: '就业人口', value: num(rb.work_blind) as number })
+    if (blindBars.length) {
+      out.push({ title: '盲区人口/就业', bars: blindBars, unit: '人', note: '15 分钟步行未覆盖区内的格点居住/就业人口（home_count/work_count）' })
     }
     return out
   }

@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,12 @@ import geopandas as gpd
 from pyproj import CRS
 
 from app.tools.isochrone import _call_isochrone, _mapbox_token
+
+# A1 轨道服务盲区叠加（同目录纯函数模块：脚本方式运行 / importlib 载入都可用）
+_SKILL_SCRIPTS = Path(__file__).resolve().parent
+if str(_SKILL_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SKILL_SCRIPTS))
+import residential_overlay as _ro  # noqa: E402
 
 ANALYSIS_CRS = "EPSG:32650"  # UTM 50N，适合深圳
 OUTPUT_CRS = "EPSG:4326"
@@ -45,6 +52,12 @@ ISO_COLORS = {"5": "#0c4a6e", "10": "#0ea5e9", "15": "#bae6fd"}
 BANDS_LAYER_ID = "rail_network_walking_bands"
 HARD_LAYER_ID = "rail_network_hard_to_reach"
 CLUSTERS_LAYER_ID = "rail_entrance_clusters"
+
+# A1：难达区内的盲区图层（居住地块 / 人口·就业格）
+BLIND_RES_LAYER_ID = "rail_blindspot_residential"
+BLIND_POP_LAYER_ID = "rail_blindspot_population"
+DEFAULT_LAND_SHP = _ro.DEFAULT_LAND_SHP
+DEFAULT_POP_GEOJSON = _ro.DEFAULT_POP_GEOJSON
 
 
 class AnalysisInputError(ValueError):
@@ -386,7 +399,7 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
         try:
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
             if cached.get("fingerprint") == fingerprint and cached.get("stats"):
-                return _output_from_cache(cached, entrance_count, cache_file, workspace)
+                return _output_from_cache(cached, entrance_count, cache_file, workspace, repo_root, params)
         except Exception:  # noqa: BLE001 —— 缓存损坏则回退实时计算
             pass
 
@@ -467,6 +480,9 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     clusters_gj = {"type": "FeatureCollection", "features": cluster_feats}
 
     geojson_by_id = {BANDS_LAYER_ID: bands_gj, HARD_LAYER_ID: hard_gj, CLUSTERS_LAYER_ID: clusters_gj}
+
+    # A1：居住用地 × 人口/就业 × 可达带/难达区 叠加（并入 stats + 两幅盲区图层）
+    _attach_blindspot(stats, geojson_by_id, repo_root, params)
 
     evidence = _build_evidence(
         versions,
@@ -553,6 +569,8 @@ def _materialize_layers(workspace: Path, geojson_by_id: dict[str, dict]) -> list
         BANDS_LAYER_ID: {"mode": "categorized", "field": "minute", "classes": [{"value": str(m), "color": c} for m, c in ISO_COLORS.items()], "strokeWidth": 0, "fillOpacity": 0.62},
         HARD_LAYER_ID: {"fillColor": "#cbd5e1", "fillOpacity": 0.35, "strokeWidth": 0},
         CLUSTERS_LAYER_ID: {"radius": 6, "fillColor": "#334155", "strokeColor": "#ffffff", "strokeWidth": 1},
+        BLIND_RES_LAYER_ID: {"mode": "categorized", "field": "kind", "classes": [{"value": "residential_blindspot", "color": "#e11d48"}], "fillColor": "#e11d48", "fillOpacity": 0.5, "strokeColor": "#7f1d1d", "strokeWidth": 1},
+        BLIND_POP_LAYER_ID: {"mode": "categorized", "field": "kind", "classes": [{"value": "population_blindspot", "color": "#f97316"}], "fillColor": "#f97316", "fillOpacity": 0.55, "strokeColor": "#9a3412", "strokeWidth": 1},
     }
     for layer_id, gj in geojson_by_id.items():
         path = layer_dir / f"{layer_id}.json"
@@ -589,7 +607,76 @@ def _layer_name(layer_id: str) -> str:
         BANDS_LAYER_ID: "研究区步行可达带（5/10/15 分钟，真实路网）",
         HARD_LAYER_ID: "难达区（15 分钟步行外）",
         CLUSTERS_LAYER_ID: "出入口簇（真实出入口代表）",
+        BLIND_RES_LAYER_ID: "盲区居住地块（15 分钟步行外）",
+        BLIND_POP_LAYER_ID: "盲区人口/就业格（15 分钟步行外）",
     }.get(layer_id, layer_id)
+
+
+def _attach_blindspot(stats: dict, geojson_by_id: dict, repo_root: Path, params: dict) -> bool:
+    """A1：把「居住用地 × 人口/就业 × 可达带/难达区」叠加结果并入 stats 与图层集。
+
+    可达几何复用本 run 的环带/难达 geojson（rail 图层按其米制坐标落盘，此处同口径解读），
+    再裁到研究区边界；用地/人口为本地文件。可选数据缺失时静默跳过（保持 rail 主结果可用）；
+    显式传了参数却缺文件则失败，避免默默降级。
+    """
+    try:
+        from shapely.geometry import shape
+
+        explicit_land = params.get("land_use_path") is not None
+        explicit_pop = params.get("population_grid_path") is not None
+        land_default = (repo_root / _ro.DEFAULT_LAND_SHP).resolve()
+        pop_default = (repo_root / _ro.DEFAULT_POP_GEOJSON).resolve()
+        if explicit_land:
+            land_path = _resolve_path(repo_root, params["land_use_path"], _ro.DEFAULT_LAND_SHP)
+        elif land_default.is_file():
+            land_path = land_default
+        else:
+            land_path = None
+        if explicit_pop:
+            pop_path = _resolve_path(repo_root, params["population_grid_path"], _ro.DEFAULT_POP_GEOJSON)
+        elif pop_default.is_file():
+            pop_path = pop_default
+        else:
+            pop_path = None
+        if land_path is None or pop_path is None:
+            return False
+
+        study_path = _resolve_path(repo_root, params.get("study_area_path"), DEFAULT_STUDY_AREA)
+        study_crs = _crs(params.get("study_area_crs", OUTPUT_CRS), "研究范围")
+        boundary_m, _area = load_study_boundary(study_path, study_crs)
+
+        bands = (geojson_by_id.get(BANDS_LAYER_ID) or {}).get("features") or []
+        band_geoms = [
+            (int(f["properties"]["minute"]), shape(f["geometry"]))
+            for f in bands
+            if f.get("geometry") and f.get("properties", {}).get("minute") is not None
+        ]
+        if not band_geoms:
+            return False
+        hard_feats = (geojson_by_id.get(HARD_LAYER_ID) or {}).get("features") or []
+        hard_m = shape(hard_feats[0]["geometry"]) if hard_feats else None
+        if hard_m is None:
+            return False
+
+        res_gdf_m = _ro.load_residential_land(land_path)
+        pop_gdf_m = _ro.load_population_grid(pop_path)
+        cum_by_minute = _ro.cum_geoms_from_bands(band_geoms, boundary_m)
+        extra = _ro.residential_blindspot(
+            res_gdf_m=res_gdf_m,
+            pop_gdf_m=pop_gdf_m,
+            boundary_m=boundary_m,
+            hard_m=hard_m,
+            cum_by_minute=cum_by_minute,
+        )
+        res_gj, pop_gj = _ro.blind_features(res_gdf_m, pop_gdf_m, boundary_m, hard_m)
+        stats["residential_blindspot"] = extra
+        geojson_by_id[BLIND_RES_LAYER_ID] = res_gj
+        geojson_by_id[BLIND_POP_LAYER_ID] = pop_gj
+        return True
+    except AnalysisInputError:
+        raise
+    except Exception:  # noqa: BLE001 —— 可选叠加失败不阻断可达主结果
+        return False
 
 
 def _output(stats: dict[str, Any], evidence: dict[str, Any], materialized: list[dict], entrance_count: int, cluster_dist: int) -> dict[str, Any]:
@@ -614,9 +701,11 @@ def _output(stats: dict[str, Any], evidence: dict[str, Any], materialized: list[
     }
 
 
-def _output_from_cache(cached: dict, entrance_count: int, cache_file: Path, workspace: Path) -> dict[str, Any]:
+def _output_from_cache(cached: dict, entrance_count: int, cache_file: Path, workspace: Path, repo_root: Path, params: dict) -> dict[str, Any]:
     stats = cached["stats"]
     geojson = cached.get("geojson") or {}
+    # A1：缓存命中也补叠加（本地文件，快；不入 Mapbox 缓存指纹）
+    _attach_blindspot(stats, geojson, repo_root, params)
     materialized = _materialize_layers(workspace, geojson)
     evidence = _build_evidence(
         [Path(v["path"]) for v in cached["evidence"]["input_versions"].values()] if cached.get("evidence") else [],
