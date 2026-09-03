@@ -136,6 +136,10 @@ const MODULE_META: Record<string, { label: string; lead: string }> = {
     label: '商业供给 × 地铁真实步行可达',
     lead: '从地铁出入口出发，5/10/15 分钟真实步行能到多少商业——商业×轨交可达性',
   },
+  rail_network_reachability: {
+    label: '全区地铁步行可达率',
+    lead: '研究范围内所有出入口聚成簇，真实路网 5/10/15 分钟可达带与难达区——全区可达率',
+  },
 }
 
 const RHYTHM_ORDER = ['D_H_N_L', 'D_L_N_H', 'D_H_N_H', 'D_L_N_L', 'ND'] as const
@@ -558,6 +562,32 @@ function buildMetrics(module: AnalysisModuleResult): StatMetric[] {
     ]
     return list.filter((m): m is StatMetric => m != null)
   }
+  if (module.module_id === 'rail_network_reachability') {
+    const ent = obj(stats.entrances)
+    const clusters = obj(stats.clusters)
+    const bands = obj(stats.bands)
+    const hard = num(stats.hard_to_reach_km2)
+    const hardRate = num(stats.hard_to_reach_rate)
+    const area = num(stats.study_area_km2)
+    const cov = (m: number) => {
+      const b = obj(bands[String(m)])
+      const km2 = num(b.cumulative_area_km2)
+      const rate = num(b.coverage_rate)
+      if (km2 == null || rate == null) return null
+      return `${formatNumber(km2)} km² · ${formatNumber(rate)}%`
+    }
+    const list = [
+      metric('研究范围', area != null ? formatArea(area) : null),
+      metric('范围内出入口', num(ent.in_study_area) != null ? formatInt(num(ent.in_study_area) as number) : null, '全部真实出入口（1,159 个原始中落入研究范围）'),
+      metric('出入口簇 / 代表', num(clusters.cluster_count) != null ? `${formatInt(num(clusters.cluster_count) as number)} / ${formatInt(num(clusters.representatives) as number)}` : null, '300m 距离聚簇；代表为真实出入口，非站名'),
+      metric('5 分钟覆盖', cov(5), '真实路网步行 · 面积 · 占研究区'),
+      metric('10 分钟累计覆盖', cov(10)),
+      metric('15 分钟累计覆盖', cov(15)),
+      metric('难达区', hard != null && hardRate != null ? `${formatNumber(hard)} km² · ${formatNumber(hardRate)}%` : null, '15 分钟步行未覆盖'),
+      metric('商业点 15 分钟可及', num(obj(bands['15']).cumulative_count) != null ? formatInt(num(obj(bands['15']).cumulative_count) as number) : null, '研究范围内商业点在 15 分钟并集内'),
+    ]
+    return list.filter((m): m is StatMetric => m != null)
+  }
   return []
 }
 
@@ -635,6 +665,20 @@ function buildConclusion(module: AnalysisModuleResult): string | null {
     } else if (c15 != null && total != null) {
       push(`15 分钟可及商业点 ${formatInt(c15)} 个（范围内共 ${formatInt(total)} 个）`)
     }
+  } else if (module.module_id === 'rail_network_reachability') {
+    const bands = obj(stats.bands)
+    const req = num(obj(stats.centers).requested)
+    const clusters = obj(stats.clusters)
+    push(req != null ? `从 ${formatInt(req)} 个真实出入口代表出发（真实路网 walking）` : null)
+    const b15 = obj(bands['15'])
+    const km15 = num(b15.cumulative_area_km2)
+    const c15 = num(b15.cumulative_count)
+    push(km15 != null ? `15 分钟累计可覆盖 ${formatNumber(km15)} km²` : null)
+    push(c15 != null ? `可及商业点 ${formatInt(c15)} 个` : null)
+    push(req != null && clusters ? `（${formatInt(num(obj(stats.clusters).cluster_count) ?? 0)} 个出入口簇）` : null)
+    const hard = num(stats.hard_to_reach_km2)
+    const hardRate = num(stats.hard_to_reach_rate)
+    push(hard != null && hardRate != null ? `难达区 ${formatNumber(hard)} km²（${formatNumber(hardRate)}%）` : null)
   }
   const text = clause.join('；').replace(/；（/g, '（').trim()
   return text ? `${text}。` : null
@@ -825,6 +869,56 @@ function buildLegendGroups(module: AnalysisModuleResult): LegendGroup[] {
     }))
     if (catRows.length) {
       groups.push({ title: '商业大类', rows: catRows, note: '研究范围内分类商业点数量' })
+    }
+    return groups
+  }
+  if (module.module_id === 'rail_network_reachability') {
+    const bands = obj(stats.bands)
+    const rows: LegendRow[] = [5, 10, 15].map((m) => {
+      const b = obj(bands[String(m)])
+      return {
+        code: String(m),
+        label: `≤${m} 分钟`,
+        color: ISOCHRONE_COLORS[String(m)],
+        cells: null,
+        areaKm2: num(b.cumulative_area_km2),
+        points: num(b.cumulative_count),
+      }
+    })
+    const groups: LegendGroup[] = [
+      {
+        title: '真实路网步行可达带（累计）',
+        rows,
+        note: 'Mapbox walking；面积=累计覆盖 km²，点=累计可及商业点',
+      },
+    ]
+    groups.push({
+      title: '难达区',
+      rows: [
+        {
+          code: 'hard',
+          label: '15 分钟步行外',
+          color: '#cbd5e1',
+          cells: null,
+          areaKm2: num(stats.hard_to_reach_km2),
+          points: null,
+        },
+      ],
+      note: '研究区内 15 分钟真实路网未覆盖的部分',
+    })
+    const totalByCat = obj(stats.total_by_category)
+    const catRows: LegendRow[] = Object.keys(totalByCat)
+      .filter((c) => (num(totalByCat[c]) ?? 0) > 0)
+      .map((c) => ({
+        code: c,
+        label: c,
+        color: COMMERCIAL_CATEGORY_COLORS[c] ?? '#8a8f98',
+        cells: null,
+        areaKm2: null,
+        points: num(totalByCat[c]),
+      }))
+    if (catRows.length) {
+      groups.push({ title: '≤15 分钟可及商业（分类）', rows: catRows })
     }
     return groups
   }
@@ -1094,6 +1188,45 @@ function buildCharts(module: AnalysisModuleResult): ChartGroup[] {
     ).map((cat) => ({ label: cat, value: num(totalByCat[cat]) as number }))
     if (catBars.length) {
       out.push({ title: '商业大类 · 点数', bars: catBars, note: '研究范围内分类商业点构成' })
+    }
+    return out
+  }
+  if (module.module_id === 'rail_network_reachability') {
+    const bands = obj(stats.bands)
+    const areaBars: ChartBar[] = [5, 10, 15]
+      .map((m) => ({
+        label: `≤${m} 分钟`,
+        value: num(obj(bands[String(m)]).cumulative_area_km2),
+      }))
+      .filter((b): b is ChartBar => b.value != null)
+    const countBars: ChartBar[] = [5, 10, 15]
+      .map((m) => ({
+        label: `≤${m} 分钟`,
+        value: num(obj(bands[String(m)]).cumulative_count),
+      }))
+      .filter((b): b is ChartBar => b.value != null)
+    const out: ChartGroup[] = []
+    if (areaBars.length) {
+      out.push({
+        title: '累计覆盖面积（km²）',
+        bars: areaBars,
+        unit: 'km²',
+        note: '真实路网 walking 累计覆盖面积；面积守恒=各带+难达区=研究区',
+      })
+    }
+    if (countBars.length) {
+      out.push({
+        title: '可及商业点（累计）',
+        bars: countBars,
+        note: '研究范围内商业点在分钟并集内的 within 计数（累计口径）',
+      })
+    }
+    const totalByCat = obj(stats.total_by_category)
+    const catBars: ChartBar[] = Object.keys(totalByCat)
+      .filter((c) => (num(totalByCat[c]) ?? 0) > 0)
+      .map((c) => ({ label: c, value: num(totalByCat[c]) as number }))
+    if (catBars.length) {
+      out.push({ title: '≤15 分钟可及商业（分类）', bars: catBars })
     }
     return out
   }

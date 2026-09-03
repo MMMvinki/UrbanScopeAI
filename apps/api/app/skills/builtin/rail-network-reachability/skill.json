@@ -1,0 +1,80 @@
+{
+  "schema_version": "1.0",
+  "kind": "executable",
+  "id": "rail-network-reachability",
+  "name": "全区地铁步行可达率（出入口簇 → 5/10/15 分钟）",
+  "description": "把研究范围内全部真实地铁出入口按 300 米距离聚为出入口簇，每簇取一个真实出入口为代表（仅称出入口簇/代表，不作地铁站归属），对每个代表调用 Mapbox 真实路网步行等时圈（walking 5/10/15），跨簇并成三档可达带与 15 分钟外难达区，统计各档覆盖面积 km² 与覆盖率、难达区面积占比、研究范围内商业点在并集内的累计数量；面积守恒自检（≤5 带+5-10 带+10-15 带+难达=研究区面积）。真实路网请求失败时诚实停止或只按成功代表统计并写明失败，不使用演示覆盖率兜底。",
+  "scope": "builtin",
+  "version": "0.1.0",
+  "revision": 1,
+  "status": "validated",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "geopandas",
+      "numpy",
+      "pandas",
+      "pyproj",
+      "shapely",
+      "requests"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "study_area_path": {
+        "type": "string",
+        "description": "研究范围文件；默认 docs/workstreams/analysis-foundation/data/candidate_lohas_study_area.geojson"
+      },
+      "subway_entrance_path": {
+        "type": "string",
+        "description": "地铁出入口点源；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/地铁出入口/subway_entrance.shp"
+      },
+      "commercial_path": {
+        "type": "string",
+        "description": "商业点源；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源Export_Output_46.shp"
+      },
+      "commercial_link_path": {
+        "type": "string",
+        "description": "商业中小类连接表（OBJECTID→商业大类）；默认 ../04-乐活大道GIS数据/00-原始数据/专项资源/商业资源/商业资源_商业中小类_连接表_utf8.csv"
+      },
+      "study_area_crs": {
+        "type": "string",
+        "default": "EPSG:4326",
+        "description": "研究范围预期 CRS"
+      },
+      "cluster_distance_m": {
+        "type": "integer",
+        "default": 300,
+        "description": "出入口聚类距离（米）：同一站相邻出口通常 50–200 m，相邻街区站 ≥400–500 m"
+      },
+      "use_cache": {
+        "type": "boolean",
+        "default": true,
+        "description": "命中预计算缓存则秒开（输入文件 hash 校验），否则实时请求 Mapbox"
+      }
+    },
+    "required": []
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["success", "summary", "layer_id", "stats", "evidence", "layers"]
+  },
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 0,
+    "last_run_at": null
+  },
+  "created_at": "2026-09-03T00:00:00",
+  "updated_at": "2026-09-03T00:00:00"
+}

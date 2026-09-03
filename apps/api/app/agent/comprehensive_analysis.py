@@ -31,6 +31,7 @@ DIAGNOSIS_MODULE = "commercial_vitality"
 PUBLIC_SERVICE_MODULE = "public_service"
 POPULATION_MODULE = "population_profile"
 RAIL_ACCESSIBILITY_MODULE = "commercial_rail_accessibility"
+RAIL_NETWORK_MODULE = "rail_network_reachability"
 
 ACTIVITY_SKILL = "activity-temporal-profile"
 COMMERCIAL_SKILL = "commercial-supply-profile"
@@ -38,6 +39,7 @@ DIAGNOSIS_SKILL = "commercial-vitality"
 PUBLIC_SERVICE_SKILL = "public-service-profile"
 POPULATION_SKILL = "population-workforce-profile"
 RAIL_ACCESSIBILITY_SKILL = "commercial-rail-accessibility"
+RAIL_NETWORK_SKILL = "rail-network-reachability"
 COMPREHENSIVE_INTENT = "project-comprehensive-analysis"
 
 
@@ -93,6 +95,13 @@ MODULE_SPECS: dict[str, ModuleSpec] = {
         "L3",
         ("候选研究范围", "含有效记录标记的商业点数据", "地铁出入口点（OSM 提取，WGS84）", "MAPBOX_TOKEN（真实路网等时圈）"),
     ),
+    RAIL_NETWORK_MODULE: ModuleSpec(
+        RAIL_NETWORK_MODULE,
+        "全区地铁步行可达率",
+        RAIL_NETWORK_SKILL,
+        "L3",
+        ("候选研究范围", "地铁出入口点（OSM 提取，WGS84）", "含有效记录标记的商业点数据", "MAPBOX_TOKEN（真实路网等时圈）"),
+    ),
 }
 
 
@@ -129,6 +138,10 @@ _PUBLIC_SERVICE_TERMS = (
 )
 _RAIL_ACCESSIBILITY_TERMS = (
     "地铁", "轨交", "轨道交通", "出入口", "等时圈", "步行可达", "步行", "可达",
+)
+# 全区地铁可达（全网口径）：与 single-corridor 的「≤5 个代表出入口」区分
+_RAIL_NETWORK_TERMS = (
+    "全区地铁可达", "全区地铁", "全网地铁", "全网可达", "所有地铁站", "地铁覆盖", "可达率", "难达区", "难达",
 )
 
 
@@ -181,6 +194,17 @@ def route_analysis_request(question: str) -> AnalysisRoute | None:
             route_reason="同时命中商业与活动/昼夜语义，选择商业供给 × 昼夜活力综合诊断。",
             requested_modules=(DIAGNOSIS_MODULE,),
             executable_modules=(DIAGNOSIS_MODULE,),
+        )
+
+    # 全区地铁可达（全网口径）：可达率/难达区/覆盖/所有地铁站/全区。放在 single-corridor
+    # 规则之前，避免「全区/全网/可达率」被 5 个代表出入口口径截走。
+    if _contains_any(q, _RAIL_NETWORK_TERMS):
+        return AnalysisRoute(
+            intent_id=RAIL_NETWORK_SKILL,
+            route_rule="R-RAIL-NETWORK-REACHABILITY",
+            route_reason="命中全区/全网地铁可达、可达率、难达区或覆盖语义，选择全区地铁步行可达率（全部出入口聚类成簇 → 真实路网 5/10/15 分钟并集）。",
+            requested_modules=(RAIL_NETWORK_MODULE,),
+            executable_modules=(RAIL_NETWORK_MODULE,),
         )
 
     # 商业 + 地铁/轨交/可达/等时圈语义 → 商业 × 轨交真实步行可达性。
@@ -240,6 +264,8 @@ def _route_from_intent(intent_id: str) -> AnalysisRoute | None:
         return route_analysis_request("人口画像")
     if intent_id == RAIL_ACCESSIBILITY_SKILL:
         return route_analysis_request("商业与地铁出入口步行可达")
+    if intent_id == RAIL_NETWORK_SKILL:
+        return route_analysis_request("全区地铁可达率与难达区")
     return None
 
 
