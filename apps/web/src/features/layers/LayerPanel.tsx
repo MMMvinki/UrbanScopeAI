@@ -1,11 +1,10 @@
-import { Fragment, useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, Folder, FolderOpen, ListChecks, Lock, Pencil, Plus, Trash2, Users, X } from 'lucide-react'
+import { Fragment, useEffect, useRef, useState } from 'react'
+import { CheckSquare, ChevronDown, ChevronRight, Folder, FolderOpen, FolderPlus, Lock, Pencil, Plus, Square, Trash2, Users, X } from 'lucide-react'
 import type { DragEvent, ReactNode } from 'react'
 import type { LayerAction, LayerMetadata } from './layerTypes'
 import { fetchDataSources, type FolderSource } from '../../lib/api'
 import { LayerRow } from './LayerRow'
 import { PanelCollapseButton } from '../../components/PanelCollapseButton'
-import { LayerLegend } from './LayerLegend'
 import { useAppStore } from '../../store/useAppStore'
 import { StylePanel } from './StylePanel'
 import { PreviewModal } from './PreviewModal'
@@ -21,6 +20,23 @@ interface DropTarget {
 }
 
 /* ── 「我的数据」文件路径视图（第 5 项）：已启用图层按来源文件夹归类 ────── */
+
+/** 分析生成图层的白话中文展示名（按 id 前缀匹配；基础元素命名，不硬省字数） */
+const RESULT_DISPLAY_NAMES: Array<[string, string]> = [
+  ['activity_temporal_profile', '昼夜活动强度（100m）'],
+  ['commercial_supply', '商业点数量（100m）'],
+  ['commercial_vitality', '昼夜×活力匹配（100m）'],
+  ['public_service_profile', '设施资源分布（100m）'],
+  ['population_workforce_profile', '居住与职住（100m）'],
+  ['streetview', '街道绿视率与天空'],
+  ['_kde', '核密度分布'],
+]
+
+/** 分析图层展示名：命中 id 前缀用白话中文，否则用图层原名 */
+function displayNameFor(layer: LayerMetadata): string {
+  const hit = RESULT_DISPLAY_NAMES.find(([prefix]) => layer.id.startsWith(prefix))
+  return hit ? hit[1] : layer.name
+}
 
 interface PathDir {
   kind: 'dir'
@@ -192,6 +208,7 @@ export function LayerPanel() {
   const layers = useAppStore((s) => s.layers)
   const groups = useAppStore((s) => s.groups)
   const toggleLayerVisibility = useAppStore((s) => s.toggleLayerVisibility)
+  const setLayersVisible = useAppStore((s) => s.setLayersVisible)
   const showOnlyLayer = useAppStore((s) => s.showOnlyLayer)
   const removeLayer = useAppStore((s) => s.removeLayer)
   const duplicateLayer = useAppStore((s) => s.duplicateLayer)
@@ -209,9 +226,12 @@ export function LayerPanel() {
   // 就地重命名：正在编辑的图层 id
   const [renamingId, setRenamingId] = useState<string | null>(null)
 
-  // 多选删除：多选模式 + 已选图层 id 集合（平台只读图层不可选）
-  const [selectMode, setSelectMode] = useState(false)
+  // 常显多选：已选图层 id 集合（平台只读图层不可选）；始终可用，不需进入「多选」模式
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // shift 范围选择的锚点（最后一次非 shift 点击的行 id；shift+点击 = 选中锚点到该行之间）
+  const anchorIdRef = useRef<string | null>(null)
+  // 批量分组：正在被分组的图层 id 集合（null = 未打开批量分组）
+  const [batchGroupLayers, setBatchGroupLayers] = useState<string[] | null>(null)
   // 「我的数据」视图切换（第 5 项）：图层视图（分组平铺） / 文件路径视图（已启用图层按来源文件夹归类）
   const [myDataView, setMyDataView] = useState<'layer' | 'path'>('layer')
   // 文件路径视图用：文件夹数据源根目录（含下载目录），把图层 data_path 归类到对应来源
@@ -224,23 +244,81 @@ export function LayerPanel() {
       .catch(() => {})
   }, [folderSourcesTick])
 
-  const enterSelectMode = () => {
-    setSelectMode(true)
+  /** 清空当前选择 */
+  const clearSelection = () => {
     setSelectedIds(new Set())
+    anchorIdRef.current = null
   }
 
-  const exitSelectMode = () => {
-    setSelectMode(false)
-    setSelectedIds(new Set())
+  /** 用户数据里可选择的图层（非平台只读），按渲染顺序（分组内 + 未分组）排列，供 shift 范围选择 */
+  const selectableIds = () => {
+    const grouped = new Set(groups.flatMap((group) => group.layerIds))
+    const user = layers.filter((layer) => !(layer.source === 'platform' && layer.readonly))
+    // 底层模型序是「底→顶」（数组尾=最前层）；面板已翻转为「顶行=最前层」，
+    // shift 范围选择 / 全选都按用户看到的可见顺序（前→后）走
+    const ordered = [
+      ...groups.flatMap((group) => group.layerIds),
+      ...user.filter((layer) => !grouped.has(layer.id)).map((layer) => layer.id),
+    ]
+    return ordered
+      .reverse()
+      .filter((id) => {
+        const layer = layers.find((item) => item.id === id)
+        return layer != null && !layer.readonly
+      })
   }
 
-  const toggleSelect = (layerId: string) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(layerId)) next.delete(layerId)
-      else next.add(layerId)
-      return next
-    })
+  const toggleSelect = (layerId: string, shiftKey = false) => {
+    const ids = selectableIds()
+    const next = new Set(selectedIds)
+    // shift + 点：选中「锚点 → 该行」之间的可选项（锚点=最后一次非 shift 点击）
+    if (shiftKey && anchorIdRef.current != null) {
+      const a = ids.indexOf(anchorIdRef.current)
+      const b = ids.indexOf(layerId)
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a <= b ? [a, b] : [b, a]
+        for (let i = lo; i <= hi; i += 1) next.add(ids[i])
+        setSelectedIds(next)
+        return
+      }
+    }
+    if (next.has(layerId)) next.delete(layerId)
+    else next.add(layerId)
+    anchorIdRef.current = layerId
+    setSelectedIds(next)
+  }
+
+  /** 全选 / 取消全选（已全选则清空） */
+  const toggleSelectAll = () => {
+    const ids = selectableIds()
+    setSelectedIds(selectedIds.size === ids.length ? new Set() : new Set(ids))
+  }
+
+  /** 点眼睛的成熟交互：有多选且点的是所选行 → 整组一起开关（以该行状态反向翻转）；否则单层开关 */
+  const handleRowVisibilityToggle = (layer: LayerMetadata) => {
+    if (selectedIds.size > 0 && selectedIds.has(layer.id)) {
+      setLayersVisible(Array.from(selectedIds), !layer.visible)
+      return
+    }
+    toggleLayerVisibility(layer.id)
+  }
+
+  /** 把所选图层批量移到分组：打开批量分组弹窗 */
+  const handleBatchGroup = () => {
+    const targets = Array.from(selectedIds)
+    if (targets.length === 0) return
+    setBatchGroupLayers(targets)
+  }
+
+  /** 清空「我的数据」：删除全部非平台只读图层（平台数据保留） */
+  const handleClearMyData = async () => {
+    const targets = layers.filter((layer) => !(layer.source === 'platform' && layer.readonly))
+    if (targets.length === 0) return
+    if (!window.confirm(`清空「我的数据」共 ${targets.length} 个图层？\n将删除这些图层的地图与数据（平台数据不删）。`)) {
+      return
+    }
+    const results = await Promise.allSettled(targets.map((layer) => removeLayer(layer.id)))
+    if (results.some((result) => result.status === 'rejected')) window.alert('部分图层删除失败，请重试。')
   }
 
   /** 批量删除所选图层：只删非只读图层；逐个走后端彻底删除，部分失败时提示 */
@@ -260,7 +338,7 @@ export function LayerPanel() {
     if (failed.length > 0) {
       window.alert(`有 ${failed.length} 个图层删除失败，请重试。`)
     }
-    exitSelectMode()
+    clearSelection()
   }
 
   // 平台数据只读图层：折叠展开状态（默认展开）
@@ -310,7 +388,8 @@ export function LayerPanel() {
         setRenamingId(layerId)
         break
       case 'group':
-        setModal({ layerId, kind: 'group' })
+        // 单图层分组也走批量分组弹窗（layerIds 长度 1），与多选批量分组共用一套交互
+        setBatchGroupLayers([layerId])
         break
       case 'preview':
         setModal({ layerId, kind: 'preview' })
@@ -340,13 +419,13 @@ export function LayerPanel() {
     setOpenMenuId(null)
   }
 
-  // 平台数据（只读底座）固定在顶部独立分组；其余（演示/上传/生成 + 用户分组）保持原有渲染
+  // 平台数据（只读底座）固定沉在列表最底独立分组（=地图最底层）；其余（演示/上传/生成 + 用户分组）在上
   const platformLayers = layers.filter((layer) => layer.source === 'platform' && layer.readonly)
   const groupedIds = new Set(groups.flatMap((group) => group.layerIds))
   const ungrouped = layers
     .filter((layer) => !(layer.source === 'platform' && layer.readonly))
     .filter((layer) => !groupedIds.has(layer.id))
-  // 可见顺序 = 分组内成员 + 未分组（与渲染顺序一致，拖拽落点换算索引用）
+  // 可见顺序 = 分组内成员 + 未分组（底层模型序，底→顶，仅拖拽落点换算用；面板渲染已翻转成顶行=最前层）
   const visibleIds = [
     ...groups.flatMap((group) => group.layerIds),
     ...ungrouped.map((layer) => layer.id),
@@ -407,10 +486,14 @@ export function LayerPanel() {
     event.preventDefault()
     if (!dragFromId || layerId === dragFromId) return
     const target = dropTarget ?? { layerId, position: 'above' as const }
+    // 面板已翻转成「顶行=最前层」，底层模型序仍是「底→顶」（数组尾=最前层）。
+    // 拖到目标「上方」= 比目标更前 → 模型里插到目标之后；「下方」= 更底 → 插到目标之前。
+    // visibleIds 是模型序；fromId 若在目标之前被移除会使目标索引前移 1，先补偿再插。
     const targetIndex = visibleIds.indexOf(target.layerId)
+    const fromIndex = visibleIds.indexOf(dragFromId)
     if (targetIndex < 0) return
-    // 换算到可见序列的插入索引（下方 = 目标行之后）
-    const toVisibleIndex = target.position === 'below' ? targetIndex + 1 : targetIndex
+    const targetAfterRemoval = targetIndex - (fromIndex >= 0 && fromIndex < targetIndex ? 1 : 0)
+    const toVisibleIndex = target.position === 'above' ? targetAfterRemoval + 1 : targetAfterRemoval
     moveLayer(dragFromId, toVisibleIndex)
     setDragFromId(null)
     setDropTarget(null)
@@ -428,10 +511,11 @@ export function LayerPanel() {
       <Fragment key={layer.id}>
         <LayerRow
           layer={layer}
+          displayName={displayNameFor(layer)}
           menuOpen={openMenuId === layer.id}
           onToggleMenu={() => setOpenMenuId(openMenuId === layer.id ? null : layer.id)}
           onCloseMenu={() => setOpenMenuId(null)}
-          onToggleVisibility={() => toggleLayerVisibility(layer.id)}
+          onToggleVisibility={() => handleRowVisibilityToggle(layer)}
           onAction={(action) => handleAction(layer.id, action)}
           renaming={renamingId === layer.id}
           onRenameRequest={() => setRenamingId(layer.id)}
@@ -443,12 +527,9 @@ export function LayerPanel() {
           onDragOver={handleDragOver}
           onDrop={handleDrop}
           onDragEnd={handleDragEnd}
-          selectMode={selectMode}
           selected={selectedIds.has(layer.id)}
-          onToggleSelect={() => toggleSelect(layer.id)}
+          onToggleSelect={(shiftKey) => toggleSelect(layer.id, shiftKey)}
         />
-        {/* 分级设色图例：ArcGIS 式色块 + 数值区间，紧跟图层行下方，可下拉收起 */}
-        <LayerLegend layerId={layer.id} />
       </Fragment>
     )
   }
@@ -477,44 +558,16 @@ export function LayerPanel() {
           </button>
           <button
             type="button"
-            className={
-              selectMode ? 'button button--secondary button--sm is-active' : 'button button--secondary button--sm'
-            }
-            onClick={() => (selectMode ? exitSelectMode() : enterSelectMode())}
-            title="勾选多个图层后批量删除"
+            className="button button--secondary button--sm"
+            onClick={() => void handleClearMyData()}
+            title="删除全部「我的数据」图层（保留平台数据）"
           >
-            <ListChecks aria-hidden="true" />
-            {selectMode ? '退出多选' : '多选'}
+            <Trash2 aria-hidden="true" />
+            清空我的数据
           </button>
           <PanelCollapseButton />
         </div>
       </header>
-
-      {/* 多选删除操作条：显示已选数量 + 批量删除 + 完成 */}
-      {selectMode && (
-        <div className="layer-select-bar">
-          <span className="layer-select-bar__count">
-            已选 {selectedIds.size} 个图层{selectedIds.size > 0 ? '（平台数据只读不可选）' : ''}
-          </span>
-          <button
-            type="button"
-            className="button button--danger button--sm"
-            disabled={selectedIds.size === 0}
-            onClick={() => void handleMultiDelete()}
-          >
-            <Trash2 aria-hidden="true" />
-            删除所选
-          </button>
-          <button
-            type="button"
-            className="button button--ghost button--sm"
-            onClick={exitSelectMode}
-          >
-            <X aria-hidden="true" />
-            完成
-          </button>
-        </div>
-      )}
 
       {/* 数据目录 + 图层列表统一滚动，避免数据多时被裁掉、看不到滚动条 */}
       <div className="layer-panel__scroll scroll-area">
@@ -543,32 +596,8 @@ export function LayerPanel() {
         </div>
       ) : (
         <div className="layer-list scroll-area">
-          {/* 平台数据（只读底座）：真实深圳数据，折叠可收起 */}
-          {platformLayers.length > 0 && (
-            <div className="layer-group layer-group--platform">
-              <button
-                type="button"
-                className="layer-group__header layer-group__header--button"
-                onClick={() => setPlatformExpanded((expanded) => !expanded)}
-                aria-expanded={platformExpanded}
-              >
-                {platformExpanded ? (
-                  <ChevronDown aria-hidden="true" />
-                ) : (
-                  <ChevronRight aria-hidden="true" />
-                )}
-                <Lock aria-hidden="true" />
-                <span className="layer-group__name">平台数据</span>
-                <span className="layer-group__count">{platformLayers.length}</span>
-              </button>
-              {platformExpanded && (
-                <div className="layer-group__body">
-                  {platformLayers.map((layer) => renderRow(layer.id))}
-                </div>
-              )}
-            </div>
-          )}
-          {/* 「我的数据」折叠组（改动 2）：用户分组 + 未分组图层，折叠态 localStorage 持久化 */}
+          {/* 「我的数据」折叠组（改动 2）：用户分组 + 未分组图层，折叠态 localStorage 持久化。
+              面板翻转为「顶行=地图最前层」，平台只读底座（地图最底层）沉到列表最底。 */}
           {myDataCount > 0 && (
             <div className="layer-group layer-group--user">
               <button
@@ -587,7 +616,64 @@ export function LayerPanel() {
                 <span className="layer-group__count">{myDataCount}</span>
               </button>
               {myDataExpanded && (
-                <div className="layer-group__body">
+                <div
+                  className="layer-group__body"
+                  onClick={(event) => {
+                    // 成熟交互：点「我的数据」非图层的空白处即取消多选（行/按钮/操作条内不取消）
+                    const target = event.target as HTMLElement
+                    if (target.closest('.layer-row, .layer-select-bar, button, input, label')) return
+                    setSelectedIds(new Set())
+                  }}
+                >
+                  {/* 多选操作条：随「我的数据」出现（选中了才显示），单点=选中、shift+点=范围 */}
+                  {selectedIds.size > 0 && (
+                    <div className="layer-select-bar">
+                      <span className="layer-select-bar__count">已选 {selectedIds.size} 个图层</span>
+                      <button
+                        type="button"
+                        className="button button--ghost button--sm"
+                        onClick={toggleSelectAll}
+                        title="全选 / 取消全选（平台数据只读不可选）"
+                      >
+                        {selectedIds.size >= selectableIds().length ? (
+                          <>
+                            <Square aria-hidden="true" />
+                            取消全选
+                          </>
+                        ) : (
+                          <>
+                            <CheckSquare aria-hidden="true" />
+                            全选
+                          </>
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--secondary button--sm"
+                        onClick={handleBatchGroup}
+                        title="把所选图层移动到分组 / 新建分组"
+                      >
+                        <FolderPlus aria-hidden="true" />
+                        移到分组
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--danger button--sm"
+                        onClick={() => void handleMultiDelete()}
+                      >
+                        <Trash2 aria-hidden="true" />
+                        删除
+                      </button>
+                      <button
+                        type="button"
+                        className="button button--ghost button--sm"
+                        onClick={clearSelection}
+                      >
+                        <X aria-hidden="true" />
+                        取消
+                      </button>
+                    </div>
+                  )}
                   <div className="layer-view-toggle" role="tablist" aria-label="我的数据视图">
                     <button
                       type="button"
@@ -612,17 +698,18 @@ export function LayerPanel() {
                   </div>
                   {myDataView === 'layer' ? (
                     <>
-                      {groups.map((group) => (
+                      {/* 面板翻转为「顶行=最前层」：先未分组（最前）再分组（倒序、组内也倒序） */}
+                      {ungrouped.map((layer) => renderRow(layer.id)).reverse()}
+                      {[...groups].reverse().map((group) => (
                         <div className="layer-group" key={group.id}>
                           <div className="layer-group__header">
                             <Folder aria-hidden="true" />
                             <span className="layer-group__name">{group.name}</span>
                             <span className="layer-group__count">{group.layerIds.length}</span>
                           </div>
-                          {group.layerIds.map((layerId) => renderRow(layerId))}
+                          {[...group.layerIds].reverse().map((layerId) => renderRow(layerId))}
                         </div>
                       ))}
-                      {ungrouped.map((layer) => renderRow(layer.id))}
                     </>
                   ) : (layerPathGroups ?? []).map((g) => (
                     <div className="layer-group" key={g.sourceId}>
@@ -648,6 +735,31 @@ export function LayerPanel() {
               )}
             </div>
           )}
+          {/* 平台数据（只读底座）：地图最底层，固定在「我的数据」之下 */}
+          {platformLayers.length > 0 && (
+            <div className="layer-group layer-group--platform">
+              <button
+                type="button"
+                className="layer-group__header layer-group__header--button"
+                onClick={() => setPlatformExpanded((expanded) => !expanded)}
+                aria-expanded={platformExpanded}
+              >
+                {platformExpanded ? (
+                  <ChevronDown aria-hidden="true" />
+                ) : (
+                  <ChevronRight aria-hidden="true" />
+                )}
+                <Lock aria-hidden="true" />
+                <span className="layer-group__name">平台数据</span>
+                <span className="layer-group__count">{platformLayers.length}</span>
+              </button>
+              {platformExpanded && (
+                <div className="layer-group__body">
+                  {platformLayers.slice().reverse().map((layer) => renderRow(layer.id))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
       </div>
@@ -658,8 +770,8 @@ export function LayerPanel() {
       {modal?.kind === 'preview' && (
         <PreviewModal layerId={modal.layerId} onClose={() => setModal(null)} />
       )}
-      {modal?.kind === 'group' && (
-        <GroupDialog layerId={modal.layerId} onClose={() => setModal(null)} />
+      {batchGroupLayers && (
+        <GroupDialog layerIds={batchGroupLayers} onClose={() => setBatchGroupLayers(null)} />
       )}
     </div>
   )
