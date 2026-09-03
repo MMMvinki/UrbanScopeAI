@@ -26,7 +26,7 @@ from typing import Any
 import geopandas as gpd
 from pyproj import CRS
 
-from app.tools.isochrone import _call_isochrone
+from app.tools.isochrone import _call_isochrone, _mapbox_token
 
 ANALYSIS_CRS = "EPSG:32650"  # UTM 50N，适合深圳
 OUTPUT_CRS = "EPSG:4326"
@@ -178,11 +178,20 @@ def representative_indices(clusters: list[list[int]], coords: list[tuple[float, 
 
 # ── 等时圈请求与融合 ───────────────────────────────────────────
 
-def fetch_isochrones(reps_wgs84: list[tuple[float, float]]) -> tuple[dict[int, list[Any]], list[int]]:
-    """对每个代表串行请求 5/10/15（0.3s 间隔）；返回 {minute: [EPSG:4326 geom]} 与失败下标。"""
+def fetch_isochrones(reps_wgs84: list[tuple[float, float]], *, max_total_s: float = 240.0) -> tuple[dict[int, list[Any]], list[int]]:
+    """对每个代表串行请求 5/10/15（0.3s 间隔）；返回 {minute: [EPSG:4326 geom]} 与失败下标。
+
+    总耗时护栏：超过 max_total_s 立即整体停止（诚实失败），避免长时间把后端拖在重试里。
+    """
+    started = time.monotonic()
     by_minute: dict[int, list[Any]] = {m: [] for m in MINUTES}
     failed: list[int] = []
     for idx, (lon, lat) in enumerate(reps_wgs84):
+        if time.monotonic() - started > max_total_s:
+            raise IsochroneAllFailed(
+                f"真实路网请求累计超过 {int(max_total_s)}s（已成功 {idx} 个代表、失败 {len(failed)} 个），"
+                "已停止以免拖垮服务；请检查 MAPBOX_TOKEN/网络，或先跑一次预计算缓存"
+            )
         try:
             payload = _call_isochrone("walking", lon, lat, list(MINUTES), 0)
         except Exception as exc:  # noqa: BLE001 —— 单个中心失败不致命，记入失败列表
@@ -387,6 +396,13 @@ def run_analysis(params: dict[str, Any], workspace: Path) -> dict[str, Any]:
     clusters = cluster_entrances(coords, float(cluster_dist))
     rep_idx = representative_indices(clusters, coords)
     reps_wgs84 = [(float(entrances.geometry.iloc[i].x), float(entrances.geometry.iloc[i].y)) for i in rep_idx]
+
+    # 硬化（避免拖挂）：无缓存且无 token → 快速诚实停止，不逐口重试
+    if not str(_mapbox_token() or "").strip():
+        raise IsochroneAllFailed(
+            "未配置 MAPBOX_TOKEN（且无预计算缓存命中）：无法请求真实路网等时圈。"
+            "请在 apps/api/.env 配置 MAPBOX_TOKEN 或先跑一次预计算缓存后再演示"
+        )
 
     by_minute, failed = fetch_isochrones(reps_wgs84)
     success_count = len(rep_idx) - len(failed)

@@ -176,18 +176,23 @@ export function MapWorkspace() {
       deckOverlayRef.current = null
     }
 
-    // load 超时看门狗：任何未能在期限内就绪的初始化都会暴露为兜底，而非静默空白
+    // load 超时看门狗：数据/图层较重时 8s 内未就绪常见且 map 'load' 会自愈；
+    // 只降噪提示、不当作错误打 console.error，也不立刻切兜底（load 事件回来时统一纠正）。
     let loadedRef = false
     const watchdog = window.setTimeout(() => {
       if (!loadedRef) {
-        console.error('[map] load 超时（8s）：地图未就绪')
-        setWebglError(true)
+        console.warn('[map] 首次渲染偏慢（>8s，常因大数据图层惰性加载）：继续等待 load 自愈')
       }
     }, 8000)
+    // 真正的兜底（避免静默空白）：25s 仍无 load 才切示意地图；load 事件回来会自动纠正
+    const hardFallback = window.setTimeout(() => {
+      if (!loadedRef) setWebglError(true)
+    }, 25000)
 
     map.on('load', () => {
       loadedRef = true
       window.clearTimeout(watchdog)
+      window.clearTimeout(hardFallback)
       console.info('[map] load 就绪', {
         layers: Object.keys(map.getStyle().sources).length,
       })
@@ -260,6 +265,7 @@ export function MapWorkspace() {
     return () => {
       observer.disconnect()
       window.clearTimeout(watchdog)
+      window.clearTimeout(hardFallback)
       if (mapRef.current) {
         try {
           mapRef.current.remove()
