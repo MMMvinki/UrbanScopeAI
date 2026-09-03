@@ -630,10 +630,13 @@ function reduceEvent(msg: AgentMessage, event: AgentEvent, side: Partial<AppStat
           .filter((ids) => ids.length)
         if (moduleLayerSets.length) {
           const lastGroup = moduleLayerSets[moduleLayerSets.length - 1]
+          // rail 模块「只留一组」：公用可达带 + 唯一主资产层，其余资产层收起
+          const isRail = completed[completed.length - 1]?.module_id === 'rail_network_reachability'
+          const keepIds = isRail ? railReachKeepIds(lastGroup) : lastGroup
           const store = useAppStore.getState()
-          side.layers = applyLayerGroupVisibility(store.layers, lastGroup)
+          side.layers = applyLayerGroupVisibility(store.layers, keepIds)
           // 记住本次成果组，供 stream_end/收尾后再兜底一次（幂等，防 refresh 等异步重开）
-          lastRunKeepIds = [...lastGroup]
+          lastRunKeepIds = [...keepIds]
         }
       }
       // 兜底（C12）：structured 缺失或未给出任何模块成果组时（如通用/LLM 执行路径），
@@ -901,6 +904,36 @@ function applyLayerGroupVisibility(
   return layers.map((layer) =>
     isAnalysisManaged(layer) ? { ...layer, visible: keep.has(layer.id) } : layer,
   )
+}
+
+/** 可达通用基底图层：任何板块都显示（可达带/难达区/出入口簇/盲区×2） */
+const RAIL_BASE_LAYER_IDS = [
+  'rail_network_walking_bands',
+  'rail_network_hard_to_reach',
+  'rail_entrance_clusters',
+  'rail_blindspot_residential',
+  'rail_blindspot_population',
+]
+
+/** 判定某 layer_id 是否为「资产 reach 层」（板块特有，非公用基底） */
+function isRailAssetLayer(layerId: string): boolean {
+  if (RAIL_BASE_LAYER_IDS.includes(layerId)) return false
+  // 商业/公共/文化/绿地/任意 overlay 的 reach 输出
+  return layerId !== '' && (
+    layerId.startsWith('rail_poi_reach') ||
+    layerId.startsWith('rail_public_reach') ||
+    layerId.startsWith('rail_culture_reach') ||
+    layerId.startsWith('rail_green_reach') ||
+    layerId.startsWith('rail_overlay_')
+  )
+}
+
+/** rail 模块「只留一组」：公用可达带 + 唯一主资产层可见，其余资产层收起。 */
+function railReachKeepIds(outputLayerIds: readonly string[]): string[] {
+  const base = outputLayerIds.filter((id) => RAIL_BASE_LAYER_IDS.includes(id))
+  const assetLayers = outputLayerIds.filter((id) => isRailAssetLayer(id))
+  const keepAsset = assetLayers.length ? [assetLayers[assetLayers.length - 1]] : []
+  return [...base, ...keepAsset]
 }
 
 async function ensureVisibleGeojson(): Promise<void> {
@@ -1572,7 +1605,9 @@ export const useAppStore = create<AppState>((set) => ({
     void ensureVisibleGeojson()
   },
   showAnalysisLayerGroup: (ids, focusId) => {
-    set((state) => ({ layers: applyLayerGroupVisibility(state.layers, ids) }))
+    // rail 模块「只留一组」：ids 含资产 reach 层 → 只开公用可达带 + 唯一主资产层，其余资产层收起
+    const keepIds = ids.some((id) => isRailAssetLayer(id)) ? railReachKeepIds(ids) : ids
+    set((state) => ({ layers: applyLayerGroupVisibility(state.layers, keepIds) }))
     // 定位到主图层（成果卡点击时）：生成图层几乎都已在本 run 中加载，focusLayer 兜底 lazy 取几何
     if (focusId) void useAppStore.getState().focusLayer(focusId)
   },
