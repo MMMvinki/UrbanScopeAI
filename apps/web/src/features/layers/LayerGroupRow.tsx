@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Eye, EyeOff, Folder, GripVertical } from 'lucide-react'
+import { ChevronDown, ChevronRight, Eye, EyeOff, Folder, GripVertical, Trash2 } from 'lucide-react'
 import type { DragEvent, KeyboardEvent, PointerEvent, ReactNode } from 'react'
 import type { LayerGroup } from './layerTypes'
 import { useAppStore } from '../../store/useAppStore'
@@ -55,6 +55,7 @@ export function LayerGroupRow({
   children,
 }: LayerGroupRowProps) {
   const renameGroup = useAppStore((s) => s.renameGroup)
+  const removeGroup = useAppStore((s) => s.removeGroup)
   // 组「当前可见」状态 = 组内全部图层可见；点眼睛据此反向翻转整组。
   // 注意：不要把 filter 放回 selector 里——每次调用都返回新数组引用，会触发
   // useSyncExternalStore 的 getSnapshot 不稳定 → "Maximum update depth exceeded"
@@ -134,86 +135,108 @@ export function LayerGroupRow({
     .filter(Boolean)
     .join(' ')
 
+  const handleDeleteGroup = () => {
+    if (window.confirm(`删除分组「${group.name}」？\n组内图层不会被删除，移回未分组。`)) {
+      removeGroup(group.id)
+    }
+  }
+
   return (
-    <div
-      className={rowClass}
-      draggable
-      onDragStart={handleDragStart}
-      onDragOver={onDragOver}
-      onDrop={onDrop}
-      onDragEnd={onDragEnd}
-      onClick={(event) => {
-        const target = event.target as HTMLElement
-        // 点按钮（眼睛/展开/把手/输入框）不触发选组；点组名/空白 = 选中该组
-        if (target.closest('button, input, label')) return
-        onToggleSelect()
-      }}
-    >
-      <button
-        type="button"
-        className="layer-row__drag"
-        aria-label={`拖动分组 ${group.name} 调整顺序`}
-        title="按住拖动调整分组顺序"
-        onPointerDown={handlePointerDown}
+    <div className="layer-group-wrapper">
+      {/* 组头行：常驻（不随展开消失），名+[分组]+计数 始终可见；点组名选组、双击改名、点箭头收起 */}
+      <div
+        className={rowClass}
+        draggable
+        onDragStart={handleDragStart}
+        onDragOver={onDragOver}
+        onDrop={onDrop}
+        onDragEnd={onDragEnd}
+        onClick={(event) => {
+          const target = event.target as HTMLElement
+          // 点按钮（眼睛/展开/把手/输入框/删除）不触发选组；点组名/空白 = 选中该组
+          if (target.closest('button, input, label')) return
+          onToggleSelect()
+        }}
       >
-        <GripVertical aria-hidden="true" />
-      </button>
+        <button
+          type="button"
+          className="layer-row__drag"
+          aria-label={`拖动分组 ${group.name} 调整顺序`}
+          title="按住拖动调整分组顺序"
+          onPointerDown={handlePointerDown}
+        >
+          <GripVertical aria-hidden="true" />
+        </button>
 
-      <button
-        type="button"
-        className="layer-row__visibility"
-        onClick={onToggleVisibility}
-        aria-label={allVisible ? `隐藏分组 ${group.name}` : `显示分组 ${group.name}`}
-        title={allVisible ? `隐藏分组 ${group.name}` : `显示分组 ${group.name}`}
-      >
-        {allVisible ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
-      </button>
+        <button
+          type="button"
+          className="layer-row__visibility"
+          onClick={onToggleVisibility}
+          aria-label={allVisible ? `隐藏分组 ${group.name}` : `显示分组 ${group.name}`}
+          title={allVisible ? `隐藏分组 ${group.name}` : `显示分组 ${group.name}`}
+        >
+          {allVisible ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+        </button>
 
-      <div className="layer-row__meta">
-        {renaming ? (
-          <input
-            ref={inputRef}
-            className="layer-row__rename-input"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={handleKeyDown}
-            onBlur={handleBlur}
-            aria-label="分组名称"
-            spellCheck={false}
-          />
-        ) : (
-          <button
-            type="button"
-            className="layer-row__name"
-            onClick={(event) => {
-              event.stopPropagation()
-              onToggleSelect()
-            }}
-            onDoubleClick={(event) => {
-              event.stopPropagation()
-              onRenameRequest()
-            }}
-            title="单击选中分组 · 双击重命名"
-          >
-            <span>{group.name}</span>
-            <span className="layer-row__source">
-              <Folder aria-hidden="true" /> 分组
-            </span>
-          </button>
-        )}
+        <div className="layer-row__meta">
+          {renaming ? (
+            <input
+              ref={inputRef}
+              className="layer-row__rename-input"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={handleKeyDown}
+              onBlur={handleBlur}
+              aria-label="分组名称"
+              spellCheck={false}
+            />
+          ) : (
+            <button
+              type="button"
+              className="layer-row__name"
+              onClick={(event) => {
+                event.stopPropagation()
+                onToggleSelect()
+              }}
+              onDoubleClick={(event) => {
+                event.stopPropagation()
+                onRenameRequest()
+              }}
+              title="单击选中分组 · 双击重命名"
+            >
+              <span>{group.name}</span>
+              <span className="layer-row__source">
+                <Folder aria-hidden="true" /> 分组
+              </span>
+              <span className="layer-row__group-count">{group.layerIds.length}</span>
+            </button>
+          )}
+        </div>
+
+        <button
+          type="button"
+          className="layer-row__expand"
+          onClick={onToggleExpand}
+          aria-label={expanded ? `收起分组 ${group.name}` : `展开分组 ${group.name}`}
+          aria-expanded={expanded}
+          title="展开/收起分组"
+        >
+          {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+        </button>
+
+        {/* 删除分组（可发现入口）：组头右侧常驻；confirm 防误删；组内图层移回未分组 */}
+        <button
+          type="button"
+          className="layer-row__delete-group"
+          onClick={handleDeleteGroup}
+          aria-label={`删除分组 ${group.name}`}
+          title="删除分组（组内图层移回未分组）"
+        >
+          <Trash2 aria-hidden="true" />
+        </button>
       </div>
 
-      <button
-        type="button"
-        className="layer-row__expand"
-        onClick={onToggleExpand}
-        aria-label={expanded ? `收起分组 ${group.name}` : `展开分组 ${group.name}`}
-        aria-expanded={expanded}
-        title="展开/收起分组"
-      >
-        {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
-      </button>
-
+      {/* 组体：成员行缩进成块，组头行常驻其上方；收起则不渲染，组头行+计数仍在 */}
       {expanded && <div className="layer-group__body">{children}</div>}
     </div>
   )

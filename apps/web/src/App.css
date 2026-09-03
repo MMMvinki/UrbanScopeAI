@@ -1659,6 +1659,7 @@ button:disabled {
 /* 多选删除操作条：勾选模式下的计数 + 批量删除 + 完成 */
 .layer-select-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
@@ -2035,6 +2036,25 @@ button:disabled {
 
 .layer-legend__range {
   font-variant-numeric: tabular-nums;
+}
+
+/* 内嵌进「图层行详情」的图例：作为行展开的子块，无边框、默认收起（随行展开出现） */
+.layer-legend--embedded {
+  border: none;
+  background: none;
+  padding: 2px 0 0;
+  margin: 2px 0 0;
+}
+.layer-legend--embedded .layer-legend__rows {
+  margin: 3px 0 2px;
+  padding: 0;
+}
+.layer-legend__head--static {
+  cursor: default;
+  color: var(--text-secondary);
+}
+.layer-legend__head--static span {
+  font-weight: 500;
 }
 
 .layer-row__menu-wrap {
@@ -3228,21 +3248,19 @@ button:disabled {
   color: var(--text-muted);
 }
 
-/* 平台数据分组：顶部独立分区，浅色底区分于用户分组 */
+/* 平台数据分组：只读底座固定在列表最底部（=地图最底层），顶边线与上方「我的数据」分隔 */
 .layer-group--platform {
-  padding: 2px 0 6px;
-  border-bottom: 1px solid var(--border-soft);
-  margin-bottom: 4px;
+  padding: 6px 0 2px;
+  border-top: 1px solid var(--border-soft);
+  margin-top: 4px;
 }
 .layer-group--platform .layer-group__header {
   color: var(--info-text);
 }
 
-/* 「我的数据」折叠组：与平台数据块分隔 */
+/* 「我的数据」折叠组：位于列表顶部（地图最前层），不再需要上边框 */
 .layer-group--user {
-  border-top: 1px solid var(--border-soft);
-  padding-top: 6px;
-  margin-top: 4px;
+  padding-top: 2px;
 }
 .layer-group--user > .layer-group__header {
   color: var(--text-secondary);
@@ -6980,4 +6998,56 @@ button:disabled {
   background: var(--border-soft);
   padding: 2px 6px;
   border-radius: 4px;
+}
+
+/* ============================================================
+   图层分组行（LayerGroupRow）：组头常驻 + 组体缩进成块 + 删除入口
+   ============================================================ */
+.layer-group-wrapper {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 组体：成员行缩进成块、左边线强化「成组」收纳感；组头行常驻其上方 */
+.layer-group-row + .layer-group__body,
+.layer-group__body {
+  margin-left: 16px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-soft);
+}
+
+/* 组头「删除分组」按钮：常驻小图标，悬停高亮；与图层行删除语义一致 */
+.layer-row__delete-group {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-tertiary);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.layer-group-row:hover .layer-row__delete-group {
+  opacity: 1;
+}
+.layer-row__delete-group:hover {
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface));
+  color: var(--danger);
+}
+.layer-row__delete-group svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 组名右侧计数（成员数），与图层行标签区分 */
+.layer-row__group-count {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
 }
