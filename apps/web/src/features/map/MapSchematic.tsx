@@ -81,7 +81,7 @@ export function MapSchematic({ layers, styles }: MapSchematicProps) {
               fill={fill}
               fillOpacity={style?.opacity ?? 1}
               stroke={style?.strokeColor && style.strokeWidth ? stroke : '#ffffff'}
-              strokeWidth={style?.strokeWidth ?? 1.2}
+              strokeWidth={style?.strokeWidth ?? (style?.styleMode === 'categorized' ? 0 : 1.2)}
             />
           )
         }

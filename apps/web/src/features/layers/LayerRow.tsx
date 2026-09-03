@@ -13,9 +13,10 @@ const sourceLabel: Record<LayerMetadata['source'], string> = {
   folder: '目录数据',
 }
 
-/** 图层数据类型角标：几何（点/线/面/表格/栅格）+ 源文件格式（CSV/SHP/…），便于快速识别图层。 */
+/** 图层数据类型角标：几何（点/线/面/表格/栅格/热力）+ 源文件格式（CSV/SHP/…），便于快速识别图层。 */
 function layerTypeTag(layer: LayerMetadata): string {
   if (layer.kind === 'raster') return '栅格'
+  if (layer.kind === 'heatmap') return '热力'
   const geom: Record<LayerMetadata['geometry'], string> = {
     Point: '点',
     LineString: '线',

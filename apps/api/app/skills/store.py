@@ -156,6 +156,50 @@ def _dominant_geometry(geojson: dict) -> str:
     return max(counts, key=counts.get)
 
 
+def _normalize_skill_output(output: object) -> tuple[dict, list[str]]:
+    """对 skill output.json 做基线形状归一化 + 校验（A4）。
+
+    输出形状是**跨进程契约**：先归一化再消费，杜绝多态形状（chart-only vs plot、
+    layers 非 dict 列表等）在返回组装处裸解包抛异常，把「skill 已成功」翻盘成失败。
+    返回 (normalized, warnings)；warnings 是肉眼可查的非致命问题（如声明图层缺 id）。
+    """
+    warnings: list[str] = []
+    if not isinstance(output, dict):
+        return {"success": False, "summary": "skill output.json 不是对象"}, warnings
+
+    norm = dict(output)
+    # success：缺省按「非显式 False」处理（有些 skill 只写 layers 不写 success），强转 bool。
+    raw_success = norm.get("success", True)
+    if isinstance(raw_success, str):
+        norm["success"] = raw_success.strip().lower() not in ("false", "0", "no", "fail", "failed", "error")
+    else:
+        norm["success"] = bool(raw_success)
+
+    # layers：必须是 dict 列表；非 dict 项丢弃 + 告警；逐项校验 layer_id。
+    raw_layers = norm.get("layers") or []
+    if not isinstance(raw_layers, list):
+        warnings.append(f"layers 不是列表（{type(raw_layers).__name__}），已忽略")
+        norm["layers"] = []
+    else:
+        cleaned: list[dict] = []
+        for i, lyr in enumerate(raw_layers):
+            if not isinstance(lyr, dict):
+                warnings.append(f"layers[{i}] 不是对象，已忽略")
+                continue
+            if not str(lyr.get("layer_id") or "").strip():
+                warnings.append(f"layers[{i}] 缺 layer_id，已忽略：{str(lyr.get('name') or lyr)[:80]}")
+                continue
+            cleaned.append(lyr)
+        if len(cleaned) != len(raw_layers):
+            warnings.append(f"layers 从 {len(raw_layers)} 项收敛为 {len(cleaned)} 项")
+        norm["layers"] = cleaned
+
+    # summary：缺省给默认，保证上层一定能读到人类可读文本。
+    if not norm.get("summary"):
+        norm["summary"] = norm.get("message") or "skill 已执行（无 summary）"
+    return norm, warnings
+
+
 class SkillStore:
     """工作区 + 内置两棵目录树的可执行 skill 仓库。方法全同步（工具 handler 都是同步签名）。"""
 
@@ -519,6 +563,7 @@ class SkillStore:
         if op is None:
             raise SkillError(f"skill 不存在：{skill_id}")
         skill_dir, _read_only = loc
+        from app.data_registry import DATA_REGISTRY  # 读 current_project_id 传给子进程（A1）
 
         run_id = f"skillrun_{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}"
         run_dir = skill_dir / "runs" / run_id
@@ -527,7 +572,15 @@ class SkillStore:
         out_path = run_dir / "output.json"
         in_path.write_text(
             json.dumps(
-                {"workspace": str(WORKSPACE_ROOT), "skill_id": skill_id, "params": params or {}},
+                {
+                    "workspace": str(WORKSPACE_ROOT),
+                    "skill_id": skill_id,
+                    "params": params or {},
+                    # 当前项目作用域：技能子进程是全新解释器，看不到父进程的 current_project_id，
+                    # 若在非默认项目下跑，engine.load_gdf(项目area) 会返回 None → 裁剪被静默跳过。
+                    # 这里把项目 id 传给子进程，由 skill_runner switch_project 载入该项目图层。
+                    "current_project_id": getattr(DATA_REGISTRY, "current_project_id", "default"),
+                },
                 ensure_ascii=False,
             ),
             encoding="utf-8",
@@ -545,6 +598,10 @@ class SkillStore:
         #   直接 UnicodeDecodeError 崩 reader 线程（不致命但脏日志、可致技能产物丢失）。
         # 两侧对齐 UTF-8 + errors=replace，杜绝这两类编码坑。
         env["PYTHONIOENCODING"] = "utf-8"
+        # PYTHONIOENCODING 只管 stdio（plot/chart 事件行）；技能脚本里裸 open(path,'w')
+        # 默认按 Windows 中文 locale 走 GBK。PYTHONUTF8=1（PEP540）让文件 IO 也强制 UTF-8，
+        # 与 execute_code 子进程对齐（那儿已设 PYTHONUTF8=1，此处是遗留不对称）。A3
+        env.setdefault("PYTHONUTF8", "1")
         try:
             proc = subprocess.run(
                 [
@@ -575,27 +632,46 @@ class SkillStore:
                 "stderr_tail": "skill 运行超时（600s）",
                 "output": {"success": False, "summary": "skill 运行超时（600s）"},
                 "layers": [],
+                "issued_layers": [],
+                "warnings": ["skill 运行超时（600s）"],
                 "plot_files": [],
             }
 
-        output: dict = {}
+        raw_output: object = {}
         try:
-            output = json.loads(out_path.read_text(encoding="utf-8"))
+            raw_output = json.loads(out_path.read_text(encoding="utf-8"))
         except Exception:
-            output = {"success": False, "summary": "skill 未产出有效的 output.json"}
-        success = proc.returncode == 0 and bool(output.get("success", True))
+            raw_output = {"success": False, "summary": "skill 未产出有效的 output.json"}
+        # A4：先归一化再消费，形状错误（chart-only 无 path、layers 非 dict 列表等）在这里收敛，
+        # 不再让返回组装处裸解包抛异常翻盘成失败。
+        output, contract_warnings = _normalize_skill_output(raw_output)
+        proc_ok = proc.returncode == 0
+        output_ok = bool(output.get("success", True))
+        declared = bool(output.get("layers") or [])
+        layers = list(output.get("layers") or [])
 
         plots = self._capture_plot_events((proc.stdout or ""), ctx)
-        layers = [l for l in (output.get("layers") or []) if isinstance(l, dict)]
-        registered: list[dict] = []
-        if success:
+        issued_layers: list[dict] = []
+        warnings: list[str] = list(contract_warnings)
+        if proc_ok and output_ok:
             for layer in layers:
-                registered.append(self._register_layer(layer, ctx))
+                registered, warn = self._register_layer(layer, ctx)
+                if warn:
+                    warnings.append(warn)
+                if registered is not None:
+                    issued_layers.append(registered)
+            if declared and not issued_layers:
+                warnings.append("skill 声明了图层但无一注册成功")
+        # B1：成败判定跟真实产出对齐 —— 声明了图层但一个没上 → 视为失败，
+        # 否则 agent 拿到「成功」却无图层，会质疑产物转 execute_code 兜底。
+        # 单个声明图层注册失败只进 warnings（partial success），不硬判全败。
+        success = proc_ok and output_ok and (not declared or bool(issued_layers))
 
         self._record_run_step(skill_id, run_id, output, ctx)
         self._bump_run(skill_id, op, success=success)
 
-        return {
+        # 返回组装是**装饰性收尾**：任何异常都进 warning，绝不改 success（把已成功 run 翻失败）。
+        result = {
             "success": success,
             "skill_id": skill_id,
             "run_id": run_id,
@@ -603,9 +679,19 @@ class SkillStore:
             "stdout_tail": (proc.stdout or "")[-4000:],
             "stderr_tail": (proc.stderr or "")[-4000:],
             "output": output,
-            "layers": [r for r in registered if r is not None],
-            "plot_files": [p["path"] for p in plots],
+            "layers": issued_layers,
+            "issued_layers": [r["layer_id"] for r in issued_layers],
+            "warnings": warnings,
+            "plot_files": [],
         }
+        try:
+            # plots 含 plot_saved（带 path）和 chart_saved（只有 chart，无 path）两类，
+            # 只收集带 path 的图文件；chart 已由 _capture_plot_events 作 artifact 下发。
+            # 逐项 .get 解包，杜绝 chart-only 条目 p["path"] 抛 KeyError('path')（A4）。
+            result["plot_files"] = [p.get("path") for p in plots if p.get("path")]
+        except Exception as exc:  # noqa: BLE001 —— 装饰项失败不影响成败
+            warnings.append(f"plot_files 组装异常（已忽略）：{exc}")
+        return result
 
     def _capture_plot_events(self, stdout: str, ctx: Any) -> list[dict]:
         """解析 skill stdout 里的 plot_saved / chart_saved JSON 行 → 父 run 成果栏。"""
@@ -642,27 +728,32 @@ class SkillStore:
         except Exception:
             pass
 
-    def _register_layer(self, layer: dict, ctx: Any) -> dict | None:
-        """把 skill 产出的 GeoJSON 图层注册上图 + 按 style 声明设色。"""
+    def _register_layer(self, layer: dict, ctx: Any) -> tuple[dict | None, str]:
+        """把 skill 产出的 GeoJSON 图层注册上图 + 按 style 声明设色。
+
+        返回 (result, warning)（A2）：result=None 且 warning 非空 = 声明图层被静默丢弃的
+        根因（缺 id / 路径逃逸 / 文件不存在 / 解析失败），把原因带回 run 结果，让
+        agent/用户能看到「声明了图层但没生效：<原因>」，不再无声消失。
+        """
         from app.data_registry import DATA_REGISTRY
         from app.models.layer import FieldSpec, GeometryType, LayerMetadata, LayerSource
 
         layer_id = str(layer.get("layer_id") or "")
         if not layer_id:
-            return None
+            return None, "声明图层缺 layer_id"
         rel = str(layer.get("path") or f"data/layers/{layer_id}.json")
         try:
             resolved = (WORKSPACE_ROOT / rel).resolve()
             if WORKSPACE_ROOT not in resolved.parents and resolved != WORKSPACE_ROOT:
-                return None
+                return None, f"声明图层路径逃逸工作区：{rel}"
         except Exception:
-            return None
+            return None, f"声明图层路径解析失败：{rel}"
         if not resolved.is_file():
-            return None
+            return None, f"声明图层文件不存在：{rel}"
         try:
             geojson = json.loads(resolved.read_text(encoding="utf-8"))
         except Exception:
-            return None
+            return None, f"声明图层 JSON 解析失败：{rel}"
 
         fields = []
         for f in layer.get("fields") or []:
@@ -689,8 +780,21 @@ class SkillStore:
             fields=fields,
             description=layer.get("description"),
             generated_by="skill",
+            # 热力图层（2026-09-02）：kind=heatmap → 前端 Deck HeatmapLayer 连续渐变；
+            # weightField 指定加权字段（如慧眼「人数」），不进 bulk 端点（lazy 单取）。
+            kind=str(layer.get("kind") or "vector"),
+            weightField=layer.get("weight_field"),
+            lazy=bool(layer.get("lazy", False)),
         )
         DATA_REGISTRY.register_generated(meta, geojson=geojson)
+        # 侧车落盘（2026-09-02）：热力图层的 kind/weightField/lazy 必须在重启后还原，
+        # 否则 load_workspace_layer_files 会把它重建为普通 uploaded 点图层（丢了 heatmap 语义）。
+        try:
+            from app.data_registry import save_layer_meta
+
+            save_layer_meta(meta)
+        except Exception:
+            pass  # 侧车失败不致命：内存注册已让地图可见
 
         emit = getattr(ctx, "emit", None) if ctx is not None else None
         # generated_layer 事件：Agent 对话里显示「+N 要素」chip、会话记忆记录该图层
@@ -725,9 +829,27 @@ class SkillStore:
                 elif style.get("mode") == "categorized" and style.get("field"):
                     st = ls.build_categorized_style(layer_id, style["field"])
                     ls.apply_renderer_style(layer_id, st, emit=emit)
+                elif meta.kind == "heatmap" and (
+                    style.get("radius") is not None
+                    or style.get("strokeWidth") is not None
+                    or style.get("intensity") is not None
+                ):
+                    # 热力图层默认样式：radius=deck HeatmapLayer radiusPixels（热力半径），
+                    # strokeWidth=热力强度（与 StylePanel 的「热力强度」滑块一致；intensity 为 alias）。
+                    # population-heatmap 产出默认 25px / 2.5，避免前端兜底各自为政。
+                    patch: dict = {}
+                    if style.get("radius") is not None:
+                        patch["radius"] = float(style["radius"])
+                    sw = style.get("strokeWidth")
+                    if sw is None:
+                        sw = style.get("intensity")
+                    if sw is not None:
+                        patch["strokeWidth"] = float(sw)
+                    if patch:
+                        ls.apply_style_update(layer_id, emit=emit, **patch)
             except Exception:
                 pass  # 设色失败不致命，图层仍显示
-        return {"layer_id": layer_id, "name": meta.name, "feature_count": meta.feature_count}
+        return {"layer_id": layer_id, "name": meta.name, "feature_count": meta.feature_count}, ""
 
     def _record_run_step(self, skill_id: str, run_id: str, output: dict, ctx: Any) -> None:
         """把 skill run 记为父 run 的一个 step（steps.jsonl 目前无人写，正好补上）。"""

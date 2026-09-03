@@ -1,36 +1,57 @@
+# ── 本文件为「可复现安装」钉版本：全部顶层依赖钉到 apps/api/.venv 实测跑通的版本，
+#    严禁放宽为 >= 下界（宽松下界会让 pip 抓比实测更新的版本，出现源码编译/兼容性崩坏）。
+#    验证过的 venv 关键版本见 apps/api/.venv `pip list`，注释中标注。
+#
+# ⚠️ 已知选型固有死结（非本仓库可修，venv 为手工装配共存）：
+#    litellm==1.96.2 声明 openai<3.0.0，而 pydantic-ai-slim[openai]==2.32.1 需要 openai>=3.0.0。
+#    二者运行时真实共存（app 即这套在跑，openai 3.3.1 + litellm 1.96.2），仅 pip strict
+#    resolver 无法单次 `pip install -r requirements.txt` 同时满足。全新环境请用两段式：
+#      pip install -r <本文件去掉 litellm 行后的清单>
+#      pip install --no-deps litellm==1.96.2        # 跳过其过期的 openai<3 声明
+#      pip install fastuuid python-dotenv tiktoken tokenizers click jinja2 aiohttp importlib-metadata
+#    （后一条补 litellm --no-deps 跳过的真实专属依赖；其余依赖已由首批安装带出）
+#    李工机上的实际故障是缺 socksio（SOCKS 代理时 ImportError），pip install socksio 即可，与本死结无关。
+#
+
+# Web/ASGI：fastmcp>=2.13 依赖 uvicorn>=0.35，故 venv 为 0.52.3
 fastapi==0.115.6
-uvicorn[standard]==0.34.0
-# pydantic>=2.12 是 pydantic-ai-slim 的硬要求（venv 实际装 2.13.4）
-pydantic>=2.12
+uvicorn[standard]==0.52.3
+# pydantic>=2.12 是 pydantic-ai-slim 的硬要求（venv 实测 2.13.4）
+pydantic==2.13.4
 starlette==0.41.3
 
-# 真 GIS 计算（GeoPandas/Shapely 矢量几何；PyProj 坐标投影；DuckDB 空间聚合）
+# 真 GIS 计算（Geopandas/Shapely 矢量几何；PyProj 坐标投影；DuckDB 空间聚合）
 geopandas==1.1.1
 shapely==2.1.2
 pyproj==3.7.2
 duckdb==1.5.5
-# 栅格元数据/缩略图：rasterio>=1.3.11 提供 numpy 2 兼容 wheel（1.3.9 与 numpy 2.5 二进制不兼容，import 即崩）
-rasterio>=1.3.11
+# 栅格缩略图：gis-mcp==0.15.0 钉死 rasterio==1.3.9，故此处必须同为 1.3.9（否则 pip
+# 解算会冲突、只能退回远古 gis-mcp 0.1.0，MCP 空间分析功能受损）。
+# 注意：rasterio 1.3.9 与 numpy>=2 二进制不兼容（import 即崩），故一并钉 numpy<2。
+numpy==1.26.4
+rasterio==1.3.9
 # 缩略图 PNG 编码（Pillow）
-Pillow>=10.0
+Pillow==12.3.0
 # kernel_density 工具：scipy.stats.gaussian_kde 真核密度估计
-scipy>=1.13
+scipy==1.17.1
 
 # MCP 模式：mcp SDK 客户端桥 + gis-mcp（外部空间分析工具服务器）
 mcp==1.29.0
 gis-mcp==0.15.0
 
 # Phase 0：联网取数（OSM/Web/数据源）与 LLM 多 Provider
-requests==2.31.0
-PyYAML>=6.0
-openpyxl>=3.1
+requests==2.34.2
+PyYAML==6.0.3
+openpyxl==3.1.5
 # SOCKS 代理支持：httpx 的 SOCKS transport 依赖 socksio，缺失会在启用代理时 ImportError
-socksio>=1.0
+socksio==1.0.0
 
 # Phase 1：LiteLLM（多 Provider + 流式）
 # 注意：venv 里 openai 是 3.x（pydantic-ai-slim[openai] 要求 >=3.0.0）。
 # litellm 1.96.2 声明 openai<3.0.0，但实测 DeepSeek 路径兼容，勿降级 openai。
-litellm>=1.40
+litellm==1.96.2
 
 # Agent 框架：PydanticAI（slim 核心 + openai extra，供 DeepSeek 原生 provider）
+# openai 显式钉 3.3.1（venv 实测；pydantic-ai-slim[openai] 需 >=3.0.0，3.3.1 满足）
+openai==3.3.1
 pydantic-ai-slim[openai]==2.32.1

@@ -229,6 +229,10 @@ def run_spatial_clip(params: dict) -> ToolResult:
     layer_id = clean_layer_id(f"{target.id}_clip")
     name = str(params.get("output_name") or "").strip() or f"{target.name}裁剪"
     _features, geometry_types, _bbox = load_feature_collection(geojson)
+    # 裁剪热力图层时保留热力语义：把 kind=heatmap / weightField 透传给结果层。
+    # 否则裁剪会把「热力面」退化成普通点层（ScatterplotLayer + 人数当点尺寸），
+    # 用户要的是连续渐变热力面，不是「点大人多」的夸张点层。
+    is_heatmap = getattr(target, "kind", None) == "heatmap"
     layer = LayerMetadata(
         id=layer_id,
         name=name,
@@ -239,8 +243,11 @@ def run_spatial_clip(params: dict) -> ToolResult:
         feature_count=feature_count,
         crs="EPSG:4490",
         fields=target.fields,
-        description=f"{target.name} 裁剪到 {clip_layer.name} 范围（保留 {clip_ratio}%）",
+        description=f"{target.name} 裁剪到 {clip_layer.name} 范围（保留 {clip_ratio}%"
+        f"{'，仍为热力面' if is_heatmap else ''}）",
         generated_by="spatial_clip 工具",
+        kind=("heatmap" if is_heatmap else "vector"),
+        weightField=(target.weightField if is_heatmap else None),
     )
     DATA_REGISTRY.register_generated(layer, geojson=geojson)
     try:

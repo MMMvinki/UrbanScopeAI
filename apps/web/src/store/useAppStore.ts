@@ -218,7 +218,9 @@ function layerStyleFromMetadata(layer: LayerMetadata): Partial<LayerStyle> | nul
     opacity: layer.opacity ?? 0.6,
     fillOpacity: layer.fillOpacity ?? null,
     strokeOpacity: layer.strokeOpacity ?? null,
-    strokeWidth: layer.strokeWidth ?? 1,
+    // 分类配色默认无描边：categorized 图层当 layer.strokeWidth 未显式设置时给 0，
+    // 否则 metadata 合并会硬塞 1，把 deck/maplibre 的分类默认描边覆盖成"橙边"（密集建筑轮廓噪音）。
+    strokeWidth: layer.strokeWidth ?? (layer.styleMode === 'categorized' ? 0 : 1),
     radius: layer.radius ?? 5,
   }
   if (layer.styleMode === 'single' || layer.styleMode === 'graduated' || layer.styleMode === 'categorized') {

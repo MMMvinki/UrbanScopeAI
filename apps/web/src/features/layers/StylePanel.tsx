@@ -229,6 +229,9 @@ export function StylePanel({ layerId, onClose }: StylePanelProps) {
   const isPoint = layer.geometry === 'Point'
   // 栅格图层（如 DEM 高程）：只有不透明度有意义，填充/描边颜色对栅格无效，隐藏避免"改了没反应"
   const isRaster = layer.kind === 'raster'
+  // 热力图层（kind=heatmap）：连续渐变热力面由 deck HeatmapLayer 渲染，
+  // 只有「热力半径/强度」可调（radius/strokeWidth 复用），分档/填充/描边对热力无效。
+  const isHeatmap = layer.kind === 'heatmap'
   const fillColor = style?.fillColor ?? layer.color
   const strokeColor = style?.strokeColor ?? layer.color
   // 改动 4：填充/描边不透明度分离；旧值 opacity 兼容（fill ?? opacity ?? 默认，stroke 默认跟随 fill）
@@ -236,8 +239,13 @@ export function StylePanel({ layerId, onClose }: StylePanelProps) {
   const fillOpacity = style?.fillOpacity ?? style?.opacity ?? baseOpacity
   const strokeOpacity = style?.strokeOpacity ?? style?.opacity ?? fillOpacity
   const rasterOpacity = style?.opacity ?? 0.85
-  const strokeWidth = style?.strokeWidth ?? 1
+  // 分类配色默认无描边（与被渲染路径 deck/maplibre 一致），滑块默认 0。
+  const strokeWidth = style?.strokeWidth ?? (style?.styleMode === 'categorized' ? 0 : 1)
   const radius = style?.radius ?? 5
+  // 热力图层专用默认（2026-09-02）：半径 25px、强度 2.5 —— 与 deckLayers 的 HeatmapLayer 兜底、
+  // 及 population-heatmap skill 产出 layer.style 三处对齐；不污染上方矢量图层的 radius/strokeWidth 默认。
+  const heatmapRadius = style?.radius ?? 25
+  const heatmapIntensity = style?.strokeWidth ?? 2.5
   const isGraduated = style?.styleMode === 'graduated'
 
   const applyGraduated = () => {
@@ -301,6 +309,36 @@ export function StylePanel({ layerId, onClose }: StylePanelProps) {
           </button>
         </header>
         <div className="modal__body">
+          {isHeatmap ? (
+            // 热力图层（kind=heatmap）：连续渐变热力面，只需调热力半径/强度。
+            // 半径=radius（deck HeatmapLayer radiusPixels，即「可视化热力半径」），强度=strokeWidth。
+            <>
+              <div className="form-field">
+                <label className="form-field__label">热力半径 {heatmapRadius}px</label>
+                <input
+                  type="range"
+                  min={5}
+                  max={80}
+                  step={5}
+                  value={heatmapRadius}
+                  onChange={(event) => applyStyle({ radius: Number(event.target.value) })}
+                />
+                <p className="form-field__hint">越大越平滑模糊，越小越聚焦到格点（Baidu 慧眼式热力半径）。</p>
+              </div>
+              <div className="form-field">
+                <label className="form-field__label">热力强度 {heatmapIntensity}</label>
+                <input
+                  type="range"
+                  min={1}
+                  max={5}
+                  step={0.5}
+                  value={heatmapIntensity}
+                  onChange={(event) => applyStyle({ strokeWidth: Number(event.target.value) })}
+                />
+              </div>
+            </>
+          ) : (
+            <>
           {!isRaster && (
             <div className="form-field">
               <label className="form-field__label">填充颜色</label>
@@ -394,8 +432,8 @@ export function StylePanel({ layerId, onClose }: StylePanelProps) {
             </>
           )}
 
-          {/* Sprint 2：按字段分层设色（graduated，改动 3：任意图层可用 + 多种分档方法），栅格图层无字段分档 */}
-          {!isRaster && (
+          {/* Sprint 2：按字段分层设色（graduated，改动 3：任意图层可用 + 多种分档方法），栅格/热力图层无字段分档 */}
+          {!isRaster && !isHeatmap && (
           <div className="form-field">
             <label className="form-field__label">按字段分层设色</label>
             {numericFields.length > 0 ? (
@@ -458,6 +496,8 @@ export function StylePanel({ layerId, onClose }: StylePanelProps) {
               <p className="form-field__hint">该图层没有可用的数值字段，无法分档设色（可让 Agent 按属性设色）。</p>
             )}
           </div>
+          )}
+            </>
           )}
         </div>
       </div>

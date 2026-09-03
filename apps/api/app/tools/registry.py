@@ -731,12 +731,15 @@ TOOLS: list[ToolSpec] = [
             "分类配色：按类型字段的唯一取值给要素分色（如按 school/hospital 分色）。"
             "读字段真实取值，频次最高前 11 类各一色，其余并入「其它」。palette 为色带名"
             "（默认 category10）或逗号分隔 hex 色串。"
+            "如需给指定类别精确颜色（如「公共服务-教育→#d9489f」），用 mapping 传"
+            "{取值: hex色} 映射；只传 palette 会按取值频次自动分配，语义类别与颜色可能错配。"
         ),
         status="ready",
         parameters={
             "layer_id": "图层 id",
             "field": "按哪个分类字段分色（字符串字段，如 type/name）",
-            "palette": "色带名或 hex 色串（可选，默认 category10）",
+            "palette": "色带名或 hex 色串（可选，默认 category10；仅当不传 mapping 时生效）",
+            "mapping": "精确颜色映射 {字段取值: hex色}（可选；给出后按取值赋色，未列出的值落灰）",
         },
         json_schema={
             "type": "object",
@@ -744,6 +747,10 @@ TOOLS: list[ToolSpec] = [
                 "layer_id": {"type": "string", "description": "图层 id"},
                 "field": {"type": "string", "description": "分类字段名"},
                 "palette": {"type": "string", "description": "色带名或逗号分隔 hex 色串"},
+                "mapping": {
+                    "type": "object",
+                    "description": "精确颜色映射 {字段取值: hex色}，如 {\"公共服务-教育\": \"#d9489f\"}",
+                },
             },
             "required": ["layer_id", "field"],
         },

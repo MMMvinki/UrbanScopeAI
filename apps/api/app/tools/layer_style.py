@@ -312,7 +312,12 @@ def build_visual_variables(
 
 
 def apply_style_update(layer_id: str, *, emit: Any | None = None, **changes) -> dict:
-    """单值样式合并：改色 / 透明 / 描边 / 点半径 / 标注字段；有样式改动时清除分档回 single。
+    """单值样式合并：改色 / 透明 / 描边 / 点半径 / 标注字段。
+
+    **只换"基础填充色"（color/fillColor）才回落到单值渲染**；调描边/透明度/半径/标注
+    **保留既有分档/分类配色**（visualVariables/styleMode）。否则历史 bug：分好色后
+    一句 update_layer_style(strokeWidth=0)「去边框」把 categorized/graduated 连带清空，
+    agent 只能反复重设分类、最后干脆烘焙颜色造重复图层。
 
     返回写穿的 style patch（含 visible 时一并返回）。
     """
@@ -323,7 +328,7 @@ def apply_style_update(layer_id: str, *, emit: Any | None = None, **changes) -> 
     patch: dict[str, Any] = dict(style)
     if changes.get("visible") is not None:
         patch["visible"] = bool(changes["visible"])
-    if style:
+    if style and ("color" in style or "fillColor" in style):
         patch["styleMode"] = None  # 回到单值渲染
         patch["visualVariables"] = None
     _apply_and_emit(layer_id, patch, emit=emit)
@@ -353,7 +358,7 @@ def validate_filter(layer, conditions: dict | None) -> str | None:
     """校验 filter 字段均为图层真实字段；返回错误信息（无错误返回 None）。"""
     if not conditions:
         return None
-    known_fields = {f.name for f in (layer.fields or [])}
+    known_fields = DATA_REGISTRY.known_field_names(layer.id)
     unknown = [f for f in conditions if f not in known_fields]
     if unknown:
         return (
@@ -368,8 +373,14 @@ def build_categorized_style(
     field: str,
     palette: Any = None,
     max_categories: int = 12,
+    mapping: dict[str, str] | None = None,
 ) -> dict:
     """分类配色：按类型字段的唯一取值给要素分色（如按学校/医院）。
+
+    mapping：可选 {字段值: hex色} 精确映射。给定时按取值精确赋色，未列出的取值落
+    默认灰；**不给定时**按出现频次降序自动铺色（palette 顺序绑到"频次第 N 高"的取值，
+    语义类别与颜色可能错配——这正是"公共服务被分到红系"的根因）。mapping 让
+    「公共服务-教育→品红」这类语义配色一次到位，agent 无需靠调 palette 顺序猜。
 
     读取字段真实取值，按出现频次降序取前 max_categories-1 类，其余并入「其它」，
     每类一色（默认 category10 色板）。字段无取值抛 ValueError。
@@ -389,8 +400,12 @@ def build_categorized_style(
     cats = [key for key, _count in items]
     if len(cats) > max_categories:
         cats = cats[: max_categories - 1] + ["其它"]
-    colors = resolve_ramp(palette if palette is not None else "category10", len(cats))
-    classes = [{"value": value, "color": color} for value, color in zip(cats, colors)]
+    if mapping:
+        fallback = "#9CA3AF"  # 映射未列出的取值统一用灰，避免语义错配
+        classes = [{"value": c, "color": str(mapping.get(c) or fallback)} for c in cats]
+    else:
+        colors = resolve_ramp(palette if palette is not None else "category10", len(cats))
+        classes = [{"value": value, "color": color} for value, color in zip(cats, colors)]
     return {
         "styleMode": "categorized",
         "visualVariables": {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { HeartPulse, MapPin, Paperclip, Send, Square, Upload, X } from 'lucide-react'
 import { ChatMessage } from './ChatMessage'
 import { TypingFooter } from './TypingFooter'
@@ -41,18 +41,56 @@ const GUIDED_CASES = [
   },
 ] as const
 
-/** @ 提及目标：合并可执行 + SKILL.md 驱动 skill，去重按 id */
+/** @ 提及目标：可执行 + SKILL.md 驱动 skill + 平台图层/我的图层，按 id 去重 */
 interface MentionTarget {
   id: string
   name: string
   description: string
-  kind: 'prompt' | 'executable'
+  kind: 'prompt' | 'executable' | 'layer'
+  /** 展示分区分组：技能 / 平台图层 / 我的图层 */
+  group: 'skill' | 'platform' | 'mine'
   promptText: string
+  /** 右侧角标文字（可执行/提示/图层几何类型） */
+  badge?: string
 }
+
+/** 分组标题（@ 弹窗内用文字区分各区） */
+const GROUP_LABEL: Record<MentionTarget['group'], string> = {
+  skill: '技能',
+  platform: '平台图层',
+  mine: '我的图层',
+}
+
+const GROUP_ORDER: MentionTarget['group'][] = ['skill', 'platform', 'mine']
 
 /** 光标前的 @token（token 为字母/数字/下划线/中文），要求 @ 前不是单词字符（避免邮箱误触发） */
 const MENTION_RE = /@([\p{L}\p{N}_-]*)$/u
 const MENTION_FULL_RE = /@([\p{L}\p{N}_-]+)/gu
+
+/** 图层几何类型 → 短标签（@ 面板角标）；栅格/DEM 用「栅格」，热力用「热力」，未知回退「图层」 */
+function geometryShort(geometry: string | undefined, kind?: string): string {
+  if (kind === 'raster') return '栅格'
+  if (kind === 'heatmap') return '热力'
+  switch (geometry) {
+    case 'Polygon':
+      return '面'
+    case 'Point':
+      return '点'
+    case 'LineString':
+      return '线'
+    case 'Table':
+      return '表'
+    default:
+      return '图层'
+  }
+}
+
+/** 要素数中文缩写：12.3万 / 109709 → 11.0万，个位数原样 */
+function formatCount(n?: number): string {
+  if (n == null) return ''
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`
+  return String(n)
+}
 
 const ACCEPTED = '.csv,.xlsx,.tsv,.txt,.geojson,.json,.gpkg,.shp,.zip'
 const SUPPORTED_EXT = ['csv', 'xlsx', 'tsv', 'txt', 'geojson', 'json', 'gpkg', 'shp', 'zip']
@@ -69,6 +107,7 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
   const openUploadModal = useAppStore((s) => s.openUploadModal)
   const allSkills = useAppStore((s) => s.allSkills)
   const promptSkills = useAppStore((s) => s.skills)
+  const layers = useAppStore((s) => s.layers)
   const abortAgentRun = useAppStore((s) => s.abortAgentRun)
 
   // 是否有 Agent 运行中（loading=规划 / streaming=执行）：发送按钮切「停止」
@@ -151,48 +190,68 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
     autosizeInput()
   }, [input, autosizeInput])
 
-  // @ 提及数据源：allSkills（含可执行）+ store.skills（SKILL.md 驱动，toPlanningSkill 后的 prompt）
-  const mentionSkills = useMemo<MentionTarget[]>(() => {
+  // @ 提及数据源：allSkills（含可执行）+ store.skills（SKILL.md 驱动 prompt）+ 平台图层/我的图层
+  const mentionTargets = useMemo<MentionTarget[]>(() => {
     const map = new Map<string, MentionTarget>()
     for (const skill of allSkills) {
-      map.set(skill.id, {
+      map.set(`skill:${skill.id}`, {
         id: skill.id,
         name: skill.name,
         description: skill.description ?? '',
         kind: skill.kind,
+        group: 'skill',
         promptText: skill.core_question ?? '',
+        badge: skill.kind === 'executable' ? '可执行' : '提示',
       })
     }
     for (const skill of promptSkills) {
-      const existing = map.get(skill.id)
+      const existing = map.get(`skill:${skill.id}`)
       if (existing) {
         if (!existing.promptText) existing.promptText = skill.prompt
         continue
       }
-      map.set(skill.id, {
+      map.set(`skill:${skill.id}`, {
         id: skill.id,
         name: skill.name,
         description: skill.description,
         kind: 'prompt',
+        group: 'skill',
         promptText: skill.prompt,
+        badge: '提示',
+      })
+    }
+    for (const layer of layers) {
+      const count = layer.featureCount ? `${formatCount(layer.featureCount)}要素` : '可分析'
+      map.set(`layer:${layer.id}`, {
+        id: layer.id,
+        name: layer.name,
+        description: `${geometryShort(layer.geometry, layer.kind)} · ${count}`,
+        kind: 'layer',
+        group: layer.source === 'platform' ? 'platform' : 'mine',
+        promptText: '',
+        badge: geometryShort(layer.geometry, layer.kind),
       })
     }
     return [...map.values()]
-  }, [allSkills, promptSkills])
+  }, [allSkills, promptSkills, layers])
 
   const mentionCandidates = useMemo(() => {
     if (!mention) return []
     const q = mention.token.toLowerCase()
-    return mentionSkills
-      .filter(
-        (skill) =>
-          !q ||
-          skill.id.toLowerCase().includes(q) ||
-          skill.name.toLowerCase().includes(q) ||
-          skill.description.toLowerCase().includes(q),
-      )
-      .slice(0, 8)
-  }, [mention, mentionSkills])
+    const matches = mentionTargets.filter(
+      (t) =>
+        !q ||
+        t.id.toLowerCase().includes(q) ||
+        t.name.toLowerCase().includes(q) ||
+        t.description.toLowerCase().includes(q),
+    )
+    const result: MentionTarget[] = []
+    // 每类最多取 10 条，避免平台图层过多淹没「我的图层」与技能
+    for (const g of GROUP_ORDER) {
+      result.push(...matches.filter((t) => t.group === g).slice(0, 10))
+    }
+    return result
+  }, [mention, mentionTargets])
 
   // 来自分析页的 Skill / Pattern 草稿
   useEffect(() => {
@@ -225,14 +284,28 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
     return { token: m[1], start: m.index + 1 }
   }
 
-  /** 把消息里的 @token 解析为技能路由：SKILL.md 驱动前置方法论，可执行追加执行提示 */
+  /** 把 @token 解析为 @ 提及目标：先精确匹配 id/名称；失败再按前缀回退（图层名含空格时 @token 被截断） */
+  const findMention = (token: string): MentionTarget | undefined => {
+    const exact = mentionTargets.find((t) => t.id === token || t.name === token)
+    if (exact) return exact
+    const prefixes = mentionTargets.filter(
+      (t) => t.name.startsWith(token) || t.id.startsWith(token),
+    )
+    if (prefixes.length === 1) return prefixes[0]
+    if (prefixes.length > 1) {
+      // 多候选取名字最长者（最具体）
+      return [...prefixes].sort((a, b) => b.name.length - a.name.length)[0]
+    }
+    return undefined
+  }
+
+  /** 把消息里的 @token 解析为路由：skill 前置方法论/执行提示，图层注入确定 id（认 id 不认名） */
   const resolveMentions = (content: string): string => {
     const found: MentionTarget[] = []
     let m: RegExpExecArray | null
     MENTION_FULL_RE.lastIndex = 0
     while ((m = MENTION_FULL_RE.exec(content))) {
-      const token = m[1]
-      const target = mentionSkills.find((skill) => skill.id === token || skill.name === token)
+      const target = findMention(m[1])
       if (target && !found.some((f) => f.id === target.id)) found.push(target)
     }
     if (found.length === 0) return content
@@ -252,10 +325,20 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
         (target) =>
           `用户 @ 了可执行技能「${target.name}」（${target.id}），请优先用 execute_skill_script 执行它。`,
       )
+    const layerReqs = found
+      .filter((target) => target.kind === 'layer')
+      .map((target) => {
+        const cat = target.group === 'platform' ? '平台图层' : '我的图层'
+        return (
+          `用户指定了${cat}「${target.name}」，其图层 id 为 ${target.id}。` +
+          `分析该图层时请在 layer_id 参数中使用 ${target.id}（认 id 不认名称），不要臆造其他图层名。`
+        )
+      })
     const parts: string[] = []
     if (prompts.length > 0) parts.push(prompts.join('\n\n'))
     if (cleaned) parts.push(cleaned)
     if (routes.length > 0) parts.push(routes.join('\n'))
+    if (layerReqs.length > 0) parts.push(layerReqs.join('\n'))
     return parts.join('\n\n')
   }
 
@@ -376,7 +459,7 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
           <div className="guided-state">
             <p className="guided-state__title">你好，我是城市分析 Agent</p>
             <p className="guided-state__hint">
-              可以指挥我取数、分析并直接操作地图。输入 @ 可提及技能。选择一个场景开始：
+              可以指挥我取数、分析并直接操作地图。输入 @ 可提及技能或指定图层。选择一个场景开始：
             </p>
             <div className="guided-cases">
               {GUIDED_CASES.map((entry) => {
@@ -433,34 +516,41 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
 
       <div className="chat-input">
         {mention && mentionCandidates.length > 0 && (
-          <div className="mention-pop" ref={mentionPopRef} role="listbox" aria-label="提及技能">
-            {mentionCandidates.map((skill, index) => (
-              <button
-                type="button"
-                key={skill.id}
-                role="option"
-                aria-selected={index === mentionActive}
-                className={
-                  index === mentionActive
-                    ? 'mention-pop__item is-active'
-                    : 'mention-pop__item'
-                }
-                onMouseEnter={() => setMentionActive(index)}
-                onClick={() => selectMention(skill)}
-              >
-                <span className="mention-pop__name">{skill.name}</span>
-                <span className="mention-pop__desc">{skill.description}</span>
-                <span className="mention-pop__kind">
-                  {skill.kind === 'executable' ? '可执行' : '提示'}
-                </span>
-              </button>
-            ))}
+          <div className="mention-pop" ref={mentionPopRef} role="listbox" aria-label="提及技能或图层">
+            {mentionCandidates.map((target, index) => {
+              const showHeader = index === 0 || mentionCandidates[index - 1].group !== target.group
+              return (
+                <Fragment key={`${target.group}:${target.id}`}>
+                  {showHeader && (
+                    <div className="mention-pop__header" aria-hidden="true">
+                      {GROUP_LABEL[target.group]}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={index === mentionActive}
+                    className={
+                      index === mentionActive
+                        ? 'mention-pop__item is-active'
+                        : 'mention-pop__item'
+                    }
+                    onMouseEnter={() => setMentionActive(index)}
+                    onClick={() => selectMention(target)}
+                  >
+                    <span className="mention-pop__name">{target.name}</span>
+                    <span className="mention-pop__desc">{target.description}</span>
+                    <span className="mention-pop__kind">{target.badge}</span>
+                  </button>
+                </Fragment>
+              )
+            })}
           </div>
         )}
         <textarea
           ref={inputRef}
           className="chat-input__field"
-          placeholder="请输入想研究的规划问题，例如“帮我分析这个片区公共服务有什么问题”。输入 @ 或点下方 @ 可提及技能。"
+          placeholder="请输入想研究的规划问题，例如“帮我分析这个片区公共服务有什么问题”。输入 @ 或点下方 @ 可提及技能或指定图层。"
           value={input}
           rows={1}
           onChange={(e) => {
@@ -515,8 +605,8 @@ export function AgentPanel({ onClose }: AgentPanelProps = {}) {
               type="button"
               ref={mentionBtnRef}
               className="chat-input__tool-button chat-input__mention-btn"
-              aria-label="提及技能"
-              title="查看可 @ 的技能，选择后插入输入框"
+              aria-label="提及技能或图层"
+              title="查看可 @ 的技能与图层，选择后插入输入框"
               onClick={openMentionPicker}
             >
               <span className="chat-input__mention-glyph" aria-hidden="true">

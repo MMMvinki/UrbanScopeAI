@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "id": "population-heatmap",
+  "kind": "executable",
+  "name": "人口热力图",
+  "description": "人口热力/热力图/热度分布 -> 按人口加权连续渐变热力面；人群画像/人口画像/人群结构 → 一并输出性别/年龄/工作类型/行业/车辆拥有 构成饼图。读慧眼人口源(huoyan_resident 居住 / huoyan_worker 工作，weightField=人数) -> 点 GeoJSON -> 注册 kind=heatmap 图层，前端 deck.gl HeatmapLayer 按人数高斯平滑。population_source 取原始数据源 id（huoyan_resident/huoyan_worker）、或链接目录中文数据集名、或非 heatmap 的带人数列点图层；若传入本技能已生成的 *_pop_heat 会自动还原到其原始源。不是核密度/网格聚合。",
+  "core_question": "",
+  "keywords": [
+    "人群画像",
+    "人口画像",
+    "人群结构",
+    "画像分析",
+    "性别构成",
+    "年龄构成",
+    "行业构成"
+  ],
+  "required_data": [],
+  "outputs": [],
+  "indicators": [],
+  "body": "# 人口热力图\n\n## 适用场景\n\n用户要「人口热力图/人口热度分布/哪里人多」，如「做福田区居住人口热力图」「工作人口热度地图」。\n\n## 关键：为什么不是核密度\n\n- 平台真实人口是**百度慧眼**（`huoyan_resident` 居住 / `huoyan_worker` 工作）：每行=一个 ~1km 网格质心**点**，带绝对量列 `人数`（`pop_is_absolute=true`）。\n- 人口热力=**每个点有多少人**，按人数加权成连续渐变色面（Baidu 慧眼式）。核密度只数点密度（每个点当 1），会抹掉「一个 5 万人的格点 vs 一个 5 人的格点」的本值——**不是人口**。\n- 所以本 skill **不做后端高斯/KDE/插值**，只把慧眼人数点物化下来，渲染交给前端 `deck.gl HeatmapLayer`（`getWeight=人数`，GPU 加权平滑，`radiusPixels` 即「可视化热力半径」，可调）。\n\n## 执行方式\n\n- **可执行 skill**：命中后用 `execute_skill_script`（skill_id=`population-heatmap`）代码直跑。\n- 读源：`app.data_sources.get_source`（慧眼是 shp，`engine.load_gdf` 读不到，必须走 data_sources）。\n- 产物：`<源id>_pop_heat` 点图层（`kind=heatmap`，`weightField=人数`），geojson 每要素带 `人数` 字段；前端 HeatmapLayer 按它加权渲染连续热力面。\n\n## 参数\n\n| 参数 | 必填 | 说明 |\n|---|---|---|\n| `population_source` | 是 | 人口数据源 id：`huoyan_resident`（居住）/ `huoyan_worker`（工作）（或**另一个非 heatmap 的**带人数列点图层 id）。**严禁**用本技能已生成的热力图层（`*_pop_heat` / kind=heatmap），会把「热力面」当「人口源」自引用 |\n| `weight_field` | 否 | 加权字段，默认清单里的 `人数` |\n| `area_layer_id` | 否 | 研究范围多边形图层 id，把人口点裁到范围内 |\n| `bbox` | 否 | [minx,miny,maxx,maxy] 经纬度；不给 bbox 也不给 area 时全量读（人口 10 万级可接受） |\n\n## 人群画像分析（2026-09-02 补充）\n\n用户要「人群画像/人群结构/画像分析」（如「这块居住人口的年龄构成、行业分布」）时，本 skill 在热力图基础上**一并输出画像饼图**（emit_chart，前端 ECharts）。\n\n- 慧眼源自带画像**比率**列：性别/年龄/工作行业/行业/资产，均为 0~1 小数，且**每网格组内加总=1.0**（已验证）。\n- 该类别人口 = **人数 × 比率**，按最终空间范围（bbox/area 裁剪后）逐类聚合。**不是**把比率列直接 sum 当人数（旧 population-density-profile 的错法）。\n- 每个可靠组一张**饼图**：性别、年龄阶段(_1.._7)、工作类型(6)、行业(23)、车辆拥有。行业砍到 Top-8+「其他」防标签堆叠。\n- **不用** 教育水平/消费水平/人生阶段/收入水平：数据残缺（分布近似缺失）或跳号语义不明，硬画饼会误导。\n- 非慧眼源（已注册点图层/目录数据集）通常无画像列 → 自动跳过画像，仅出热力图。\n\n## 注意事项\n\n- 人数来自真读盘，禁止 LLM 编造人口数字；stats 的 total/max/mean 以 output.json 为准。\n- `huoyan_pedestrian`（客流 3.27M 行）禁用本 skill（全量会 OOM）；`get_source` 已护栏拒绝，改用人小时子集或 bbox。\n- 本 skill 数据口径=「人数加权连续渐变面」，不是核密度、不是网格聚合、不是 poi 点状疏密。",
+  "plan": null,
+  "scope": "builtin",
+  "version": "0.1.0",
+  "revision": 2,
+  "status": "validated",
+  "entry": "scripts/main.py",
+  "runtime": {
+    "language": "python",
+    "python": null,
+    "dependencies": [
+      "geopandas",
+      "pyogrio",
+      "numpy"
+    ]
+  },
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "population_source": {
+        "type": "string",
+        "description": "人口数据源 id：huoyan_resident（居住）/ huoyan_worker（工作），或链接数据目录暴露的中文数据集名（如 居住人口数量及画像202508，自动解析回规范 id），或另一个非 heatmap 的带『人数』列点图层 id。若传入本技能已生成的热力图层（*_pop_heat），会自动还原到其原始数据源。"
+      },
+      "weight_field": {
+        "type": "string",
+        "description": "加权字段（默认清单里的人数）"
+      },
+      "area_layer_id": {
+        "type": "string",
+        "description": "可选：研究范围多边形图层 id，把人口点裁到范围内"
+      },
+      "bbox": {
+        "type": "array",
+        "items": {
+          "type": "number"
+        },
+        "description": "可选：[minx,miny,maxx,maxy] 经纬度范围"
+      }
+    },
+    "required": [
+      "population_source"
+    ]
+  },
+  "output_schema": {},
+  "validation": {
+    "protocol_ok": true,
+    "syntax_ok": true,
+    "direct_param_access": [],
+    "warnings": [],
+    "errors": []
+  },
+  "provenance": {
+    "promoted_from": null,
+    "created_by": "platform",
+    "run_count": 26,
+    "last_run_at": "2026-09-02T15:32:29"
+  },
+  "created_at": "2026-09-02T00:00:00",
+  "updated_at": "2026-09-02T15:32:29"
+}

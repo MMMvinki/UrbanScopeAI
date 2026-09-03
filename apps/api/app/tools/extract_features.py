@@ -104,8 +104,8 @@ def run_extract_features(params: ExtractFeaturesParams | dict) -> ToolResult:
     conditions = params.filter or {}
     if not conditions:
         return ToolResult(success=False, message="需要 filter 属性条件，如 {\"type_\": \"医院\"}")
-    # filter 字段必须是源图层真实字段
-    known_fields = {f.name for f in source.fields}
+    # filter 字段必须是源图层真实字段（meta.fields 注册时常为空，并入实际 geojson 列兜底）
+    known_fields = DATA_REGISTRY.known_field_names(source_id)
     unknown = [f for f in conditions if f not in known_fields]
     if unknown:
         return ToolResult(

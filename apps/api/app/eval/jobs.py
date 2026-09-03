@@ -17,6 +17,8 @@ import threading
 import uuid
 from pathlib import Path
 
+from app.atomicio import atomic_write_json
+
 # apps/api/eval_runs/（与 eval_reports 同级）
 EVAL_RUNS_DIR = Path(__file__).resolve().parent.parent.parent / "eval_runs"
 # apps/api/eval_ws/：评测 scratch 工作区。评测子进程把 WORKSPACE_ROOT 覆盖到这里，
@@ -73,9 +75,7 @@ def start_eval_job(set_name: str = "all", tier: str = "tool", exclude_dep: bool 
 
 def _write_error(status_path: Path, st: dict | None, returncode: int) -> None:
     msg = (st or {}).get("error") or f"评测子进程异常退出（code {returncode}）"
-    tmp = status_path.with_name(status_path.name + ".tmp")
-    tmp.write_text(json.dumps({"state": "error", "error": msg}, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, status_path)
+    atomic_write_json(status_path, {"state": "error", "error": msg})
 
 
 def get_eval_job(run_id: str) -> dict | None:

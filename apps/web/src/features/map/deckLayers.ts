@@ -1,5 +1,7 @@
 import { BitmapLayer, GeoJsonLayer, ScatterplotLayer, TextLayer } from '@deck.gl/layers'
 import type { BitmapLayerProps, GeoJsonLayerProps, ScatterplotLayerProps, TextLayerProps } from '@deck.gl/layers'
+import { HeatmapLayer } from '@deck.gl/aggregation-layers'
+import type { HeatmapLayerProps } from '@deck.gl/aggregation-layers'
 import { TileLayer, TerrainLayer, MVTLayer } from '@deck.gl/geo-layers'
 import type { TileLayerProps } from '@deck.gl/geo-layers'
 import type { Layer } from '@deck.gl/core'
@@ -273,6 +275,48 @@ export function buildDeckLayers(
         if (layer.dem && layer.terrainUrl) return buildTerrainLayer(layer) as Layer[]
         return buildRasterLayer(layer, styles) as Layer[]
       }
+      if (layer.kind === 'heatmap') {
+        // 热力面（2026-09-02）：deck.gl HeatmapLayer 按 weightField 加权渲染连续渐变热力。
+        // 数据=慧眼人口点（每点带人数），getWeight=人数；radiusPixels 即「可视化热力半径」，intensity 控热力强度。
+        // 不做核密度/网格聚合的伪计算——只物化真值点 + GPU 加权高斯平滑（对齐 Baidu 慧眼人口热力）。
+        const hmData = getLayerGeojson(layer)
+        const hmFeatures = ((hmData?.features as FeatureLike[]) ?? []).filter((f) =>
+          geometryHasValidCoords(f.geometry?.coordinates),
+        )
+        const weightField = layer.weightField || '人数'
+        const hmStyle = styles[layer.id]
+        return [
+          new HeatmapLayer({
+            id: `deck-${layer.id}`,
+            data: hmFeatures as unknown as HeatmapLayerProps['data'],
+            pickable: true,
+            // 位置：点几何坐标；权重：weightField（缺省 1）
+            getPosition: (feature: unknown) => {
+              const f = feature as { geometry: { type: string; coordinates: [number, number] } }
+              return f.geometry.coordinates
+            },
+            getWeight: (feature: unknown) => {
+              const v = (feature as FeatureLike).properties?.[weightField]
+              const n = typeof v === 'number' ? v : Number(v)
+              return Number.isFinite(n) ? n : 1
+            },
+            // 热力半径：外层 radius（skill 默认 25px，可在 StylePanel 调）；强度 2.5（skill 默认）。
+            // population-heatmap 产出时已在 layer 的 style 里下发 radius=25/strokeWidth=2.5，
+            // 这里兜底覆盖任何「无样式」的 heatmap 图层（例如手工注册的），保证一致默认。
+            radiusPixels: hmStyle?.radius ?? layer.radius ?? 25,
+            intensity: hmStyle?.strokeWidth && hmStyle.strokeWidth > 0 ? hmStyle.strokeWidth : 2.5,
+            // 显著性阈值：人口分位数上尾可见（避免 0/低人口区被最大点带成一片糊）
+            threshold: 0.02,
+            colorRange: [
+              [255, 255, 204, 180],
+              [254, 217, 118, 200],
+              [254, 153, 41, 220],
+              [217, 72, 1, 240],
+              [145, 0, 63, 255],
+            ],
+          }),
+        ]
+      }
       const collection = getLayerGeojson(layer)
       // 坏几何（投影坐标/NaN/越界）直接丢弃：绝不喂给 deck.gl 崩地图
       const features: FeatureLike[] = ((collection?.features as FeatureLike[]) ?? []).filter((f) =>
@@ -297,7 +341,10 @@ export function buildDeckLayers(
       const defaultOpacity = 0.8
       const baseFillOpacity = style?.fillOpacity ?? style?.opacity ?? defaultOpacity
       const baseStrokeOpacity = style?.strokeOpacity ?? style?.opacity ?? baseFillOpacity
-      const strokeWidth = style?.strokeWidth ?? 1
+      // 描边宽：categorized 分类配色已是"每种功能一种填充色"，默认不再加基础色描边
+      // （否则密集建筑上会叠一圈层基础色#f0a35e的橙边，盖掉分类语义）。只有显式设
+      // strokeWidth>0 或非分类图层才补描边。graduated 网格/面仍默认细描边便于区格。
+      const strokeWidth = style?.strokeWidth ?? (style?.styleMode === 'categorized' ? 0 : 1)
 
       /** 图层过滤：只渲染满足条件的要素 */
       const visibleFeatures = hasFilter

@@ -6,10 +6,16 @@ LayerMetadata 是运行时对象；demo 图层数据只读 demo_data，改样式
 """
 
 import json
-import os
-import tempfile
+import threading
 
+from app.atomicio import atomic_write_json
 from app.workspace import LAYER_STYLES_FILE
+
+# 样式侧车是跨请求共享的读-改-写面。uvicorn 单进程多线程下，两个并发的 PATCH
+# 若都先 load 再 replace，会互相丢写（lost update）；用进程内锁把「读旧→合并→写新」
+# 串成原子段，并交由 atomic_write_json 的换入重试兜底瞬时占用。跨进程（execute_code
+# 子进程）写同一文件不在本进程锁覆盖内，遇 WinError 5 由换入重试顶住。
+_STYLE_LOCK = threading.Lock()
 
 
 def load_all() -> dict[str, dict]:
@@ -22,36 +28,18 @@ def load_all() -> dict[str, dict]:
 
 
 def save_patch(layer_id: str, patch: dict) -> None:
-    """合并写穿单个图层的样式 patch（原子替换，防并发半写）。"""
-    data = load_all()
-    data[layer_id] = {**(data.get(layer_id) or {}), **patch}
-    LAYER_STYLES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix="layer_styles.", suffix=".tmp", dir=str(LAYER_STYLES_FILE.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, LAYER_STYLES_FILE)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    """合并写穿单个图层的样式 patch（原子段，防并发半写+并发丢写）。"""
+    with _STYLE_LOCK:
+        data = load_all()
+        data[layer_id] = {**(data.get(layer_id) or {}), **patch}
+        atomic_write_json(LAYER_STYLES_FILE, data)
 
 
 def remove_layer_styles(layer_id: str) -> None:
     """移除图层的样式侧车记录（remove_layer 工具清理用；无记录为空操作）。"""
-    data = load_all()
-    if layer_id not in data:
-        return
-    data.pop(layer_id, None)
-    LAYER_STYLES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        prefix="layer_styles.", suffix=".tmp", dir=str(LAYER_STYLES_FILE.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, LAYER_STYLES_FILE)
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+    with _STYLE_LOCK:
+        data = load_all()
+        if layer_id not in data:
+            return
+        data.pop(layer_id, None)
+        atomic_write_json(LAYER_STYLES_FILE, data)

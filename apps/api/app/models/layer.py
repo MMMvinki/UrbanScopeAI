@@ -65,6 +65,9 @@ class LayerMetadata(BaseModel):
     styleMode: str | None = None  # single | graduated | categorized
     visualVariables: dict | None = None  # renderer 描述：graduated{field,method,classes,palette,breaks} / size_variable / opacity_variable
     labelField: str | None = None  # 标注字段
+    # ── 热力图层（2026-09-02）：连续渐变热力面（deck.gl HeatmapLayer）──
+    # kind="heatmap" 时前端按 weightField 加权渲染热力；radius 复用为热力半径。
+    weightField: str | None = None  # 加权字段（如慧眼「人数」），为空时前端按 weight=1
     # ── 手绘增强（2026-08-30）：自动字段单位偏好 ─────────────────
     units: dict[str, str] | None = None  # {"length":"m"|"km","area":"m2"|"hm2"|"km2"}，供编辑时按同单位重算
 

@@ -157,6 +157,16 @@ def _system_prompt(request: ExecuteRequest, target_layers: list) -> str:
             "5. 【核密度 / 密度图层】用户要「核密度/密度图层/密度分布/栅格图」时命中 kernel-density 可执行技能——"
             "用 execute_skill_script（skill_id=kernel-density）代码直跑，它自动生成网格多边形图层发布到地图并按 density 分层设色，"
             "禁止自己写 gaussian_kde 存 .npy/.tif 文件（平台图层只支持 GeoJSON，那些载体上不了地图）。",
+            "6. 【人口热力 / 热力图】用户要「人口热力/热力图/热度分布/哪里人多/人口密度热力」，或「人口/人群/常住 + 密度热力」组合时，"
+            "命中 population-heatmap 可执行技能——用 execute_skill_script（skill_id=population-heatmap）代码直跑："
+            "它读慧眼人口点（人数）生成 kind=heatmap 图层，前端按人数加权连续渐变热力面。"
+            "严禁用 kernel-density（那是点位密度，每个点权重 1，会丢「5 万人格点 vs 5 人格点」的人口本值），"
+            "更不要自己写 gaussian_kde/核密度存 .npy/.tif。"
+            "population_source **必须是原始数据源 id**（huoyan_resident 居住 / huoyan_worker 工作），"
+            "**绝不能**用已生成的热力图图层（*_pop_heat / 结果图层）当数据源。"
+            "skill 产出的热力面**本身就是最终热力图**（deck.gl HeatmapLayer 连续渐变），"
+            "**禁止**再额外用 execute_code 建网格多边形或 set_graduated_style 把它重新分档设色——"
+            "那会退回已被否的「格子分类面」，丢掉连续渐变热力半径语义；要统计口径就用 skill 的 stats，不要重建网格。",
         ]
     )
 
@@ -237,20 +247,67 @@ def _tool_schemas() -> list[dict]:
     return schemas
 
 
+def _reconcile_tool_result(result: ToolResult) -> ToolResult:
+    """B2 对账：工具已在抛失败前产出图层 → 提升为部分成功。
+
+    有些工具（尤其 execute_skill_script）在报失败时其实已把图层注册上图（output 里带
+    issued_layers / layers / output_layer_id）。此时硬抛 failure 会让 agent 不信产物、
+    转 execute_code 手写（按点大小渲染）兜底——这正是「技能成功却总说失败/热力变成点大小」
+    的根。这里按**真实产出**对账：有图层 → 升级为成功，原失败信息降级为 warning 文本，
+    让 agent 既能接着用产物、又能看到原缺陷，绝不覆盖 success。
+    """
+    if result.success:
+        return result
+    output = result.output
+    if not isinstance(output, dict):  # 防御：output 可能是非 dict（异常路径置 {} 等）
+        output = {}
+    issued = output.get("issued_layers") or []
+    if not isinstance(issued, list):
+        issued = []
+    layers = output.get("layers") or []
+    if isinstance(layers, list):
+        issued = issued + [
+            l.get("layer_id")
+            for l in layers
+            if isinstance(l, dict) and l.get("layer_id") and l.get("layer_id") not in issued
+        ]
+    output_layer_id = output.get("output_layer_id")
+    has_work = bool(issued) or bool(output_layer_id)
+    if not has_work:
+        return result
+    original = result.message or "工具已产出图层但上报失败"
+    warnings = output.get("warnings")
+    if not isinstance(warnings, list):
+        warnings = []
+    warnings = warnings + [f"工具已按真实产出对账为成功（原上报失败：{original}）"]
+    return ToolResult(
+        success=True,
+        output={**output, "warnings": warnings},
+        message=f"工具已成功产出图层（对账校正）：{original}",
+    )
+
+
 def _call_tool(name: str, args: dict, *, ctx: ToolContext | None = None) -> ToolResult:
-    """统一工具入口：gis_* 前缀走 MCP 桥，其余走本地 Tool Runtime（透传 ctx）。"""
+    """统一工具入口：gis_* 前缀走 MCP 桥，其余走本地 Tool Runtime（透传 ctx）。
+
+    返回前统一走 B2 对账：工具产出了图层但标失败 → 提升为成功（真实产出为准），
+    让 pydai wrapper 与旧 loop（都经本函数）一致采用「产物之证」而非单布尔。
+    """
     if name.startswith(_MCP_PREFIX):
         bridge = get_gis_mcp_bridge()
         mcp_name = name[len(_MCP_PREFIX):]
         if bridge is not None and bridge.is_ready() and mcp_name in bridge.tool_names():
             payload = bridge.call_tool(mcp_name, args)
-            return ToolResult(
+            result = ToolResult(
                 success=payload.get("success", False),
                 output=payload.get("output", {}),
                 message=payload.get("message", ""),
             )
-        return ToolResult(success=False, output={}, message=f"MCP 工具 {name} 未就绪或不存在")
-    return run_tool(name, args, ctx=ctx)
+        else:
+            result = ToolResult(success=False, output={}, message=f"MCP 工具 {name} 未就绪或不存在")
+    else:
+        result = run_tool(name, args, ctx=ctx)
+    return _reconcile_tool_result(result)
 
 
 def _tool_result_payload(result: ToolResult) -> str:
@@ -278,6 +335,19 @@ def _generated_info(output_layer_id: str, args: dict) -> tuple[str, int]:
     name_layer = DATA_REGISTRY.get_layer(base) or count_layer
     display = f"{name_layer.name}{word}" if name_layer else output_layer_id
     return display, count
+
+
+def _prune_removed_generated(generated: list[tuple[str, str, int]], removed_id: str) -> None:
+    """把被 remove_layer 删掉的图层 id 从 generated 累积列表里剔除（就地修改）。
+
+    收尾 _register_generated(generated) 会重注册列表里的每个图层；若中间层
+    （OSM 原始/裁剪）虽被 remove_layer 删掉却仍留在 generated，就会被「复活」——
+    这是「删不掉、跑完又冒出来」的根因。remove_layer 工具结果只有 layer_id 没
+    output_layer_id，走不进输出累积分支，故这里显式按 layer_id 剔除。
+    """
+    if not removed_id:
+        return
+    generated[:] = [g for g in generated if g[0] != removed_id]
 
 
 def _register_generated(generated: list[tuple[str, str, int]]) -> None:
@@ -1271,6 +1341,10 @@ def try_execute(
                                         "feature_count": count,
                                     },
                                 )
+                    # 中间层被 remove_layer 删掉：同步从 generated 累积列表剔除，
+                    # 否则收尾 _register_generated(generated) 会把它复活（OSM 原始/裁剪层"删不掉"根因）。
+                    if name == "remove_layer":
+                        _prune_removed_generated(generated, str(result.output.get("layer_id") or ""))
                 else:
                     trace.append(
                         TraceEvent(type="text", content=result.message or f"工具 {name} 执行失败")

@@ -23,8 +23,8 @@ apps/api/workspace/
 apps/api/app/platform_data/
 平台数据/
 
-# 技能运行产物 / 服务器运行日志（本地，不上传）
-apps/api/app/skills/builtin/kernel-density/runs/
+# 技能运行产物（本地，不上传）—— 覆盖全部内置技能
+apps/api/app/skills/builtin/*/runs/
 apps/api/restart_logs/
 
 # 服务器运行日志（本地，不上传）
@@ -33,6 +33,11 @@ apps/api/api_8011.out.log
 apps/api/uvi.log
 apps/api/uvicorn_8011.log
 apps/api/uvicorn_8011.err.log
+apps/api/back_8011.err.log
+apps/api/back_8011.log
+apps/api/backend_8011.log
+apps/api/restart.err.log
+apps/api/restart.out.log
 
 # 本地诊断临时文件（不上传）
 apps/api/_diag.txt

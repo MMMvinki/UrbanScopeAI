@@ -1,5 +1,5 @@
 import type { LayerSpecification, StyleSpecification } from 'maplibre-gl'
-import type { LayerMetadata, LayerStyle } from '../layers/layerTypes'
+import type { LayerMetadata, LayerStyle, VisualVariables } from '../layers/layerTypes'
 import { API_BASE } from '../../lib/api'
 
 /**
@@ -370,6 +370,10 @@ export function getLayerGeojson(layer: LayerMetadata): DemoFeatureCollection {
   if (real && real.features?.length) return real
   // 平台数据/栅格图层没有演示回退：几何未加载时渲染空（绝不显示编造的假数据）
   if (layer.readonly || layer.lazy || layer.kind === 'raster') return EMPTY_FC
+  // 真·成果图层（agent/工具/上传/OSM 注册）：后端无几何就是没有 —— 绝不回退客户端编造。
+  // 否则 generated 图层丢了 geojson 时 buildLayerGeojson 会在深圳中心画一个半径≈地图半幅的
+  // 巨型演示圆（历史咬合洞：规划范围建筑功能/精简/test_small 等空图层叠成一圈"大圈圈"）。
+  if (layer.source === 'generated' || layer.source === 'uploaded') return EMPTY_FC
   const cached = localCache.get(layer.id)
   if (cached) return cached
   const collection = buildLayerGeojson(layer)
@@ -447,48 +451,148 @@ export const sourceIdFor = (layerId: string): string => `src-${layerId}`
 export const mapLayerIdFor = (layerId: string): string => `layer-${layerId}`
 
 /**
+ * 分类配色 → MapLibre 表达式：`['match', ['get', field], v1, c1, v2, c2, ..., default]`。
+ * 与 deck 路径对齐：取值精确匹配类别；未匹配落到 default（灰）。
+ */
+function categorizedExpression(
+  field: string,
+  classes: Array<{ value: string; color: string }>,
+  defaultColor: string,
+): unknown[] {
+  const pairs: unknown[] = []
+  for (const c of classes) pairs.push(c.value, c.color)
+  return ['match', ['get', field], ...pairs, defaultColor]
+}
+
+/**
+ * 分档配色 → MapLibre 表达式：`['step', ['get', field], p0, b1, p1, b2, p2, ...]`。
+ * 语义：num < b1 → p0；b1 <= num < b2 → p1；…（deck 的 classIndexFor 是 num<=break，
+ * 精确断点差一个极小值，可忽略）。拿不到数字（NaN）落入末档色。
+ */
+function graduatedExpression(
+  field: string,
+  breaks: number[],
+  palette: string[],
+  baseColor: string,
+): unknown[] {
+  const last = palette[palette.length - 1] ?? baseColor
+  const stops: unknown[] = []
+  for (let i = 0; i < breaks.length; i++) {
+    const color = palette[i] ?? palette[palette.length - 1] ?? baseColor
+    stops.push(breaks[i], color)
+  }
+  return ['step', ['get', field], last, ...stops]
+}
+
+/** 图层过滤 → MapLibre 表达式（与 deck matchesFilter 同语义：全部条件命中才显示） */
+function filterExpression(conditions: Record<string, unknown>): unknown[] {
+  const clauses: unknown[] = []
+  for (const [field, spec] of Object.entries(conditions)) {
+    let op = 'eq'
+    let target: unknown = spec
+    if (spec && typeof spec === 'object' && !Array.isArray(spec)) {
+      const obj = spec as Record<string, unknown>
+      if ('op' in obj || 'value' in obj) {
+        op = String(obj.op ?? 'eq')
+        target = obj.value
+      }
+    }
+    if (op === 'eq') clauses.push(['==', ['get', field], target])
+    else if (op === 'ne') clauses.push(['!=', ['get', field], target])
+    else if (op === 'contains') clauses.push(['in', target, ['get', field]])
+    else if (op === 'startswith') clauses.push(['in', ['slice', ['get', field], 0, String(target).length], target])
+    else if (op === 'gt') clauses.push(['>', ['get', field], target])
+    else if (op === 'gte') clauses.push(['>=', ['get', field], target])
+    else if (op === 'lt') clauses.push(['<', ['get', field], target])
+    else if (op === 'lte') clauses.push(['<=', ['get', field], target])
+  }
+  return clauses.length ? ['all', ...clauses] : (['all'] as unknown[])
+}
+
+/** 数值字段 → 不透明度渐变：opacity_variable 插值，否则整体填充不透明度 */
+function fillOpacityExpression(
+  style: LayerStyle | undefined,
+  opacityVar: VisualVariables['opacity_variable'],
+): unknown {
+  const base = style?.fillOpacity ?? style?.opacity ?? 0.8
+  if (!opacityVar) return base
+  const breaks = opacityVar.breaks ?? []
+  const [lo, hi] = opacityVar.range ?? [0, 1]
+  if (breaks.length < 2 || hi <= lo) return base
+  return ['interpolate', ['linear'], ['get', opacityVar.field], breaks[0], lo, breaks[breaks.length - 1], hi]
+}
+
+/**
  * 图层 → MapLibre 样式：点用圆点，面用浅填充；生成图层更透明。
  * 传入 layerStyles 让 deck.gl 叠加不可用（回退路径）时也消费用户改的样式，
- * 否则「改颜色/不透明度地图不变」会在兜底模式下静默复发。
- * 数值字段与 deck 路径对齐：不透明度 opacity（1=完全不透明）、描边/半径/颜色同源。
+ * 否则「改颜色/不透明度地图不变」「分类配色不生效」会在兜底模式下静默复发。
+ * 兜底路径也用 MapLibre 数据驱动表达式渲染 graduated/categorized/filter，
+ * 对齐 deck 路径：不透明度 opacity（1=完全不透明）、描边/半径/颜色同源。
  */
 export function styleSpecFor(layer: LayerMetadata, style?: LayerStyle): LayerSpecification {
   const source = sourceIdFor(layer.id)
   const id = mapLayerIdFor(layer.id)
-  const fill = style?.fillColor ?? layer.color
   const stroke = style?.strokeColor ?? layer.color
-  const strokeWidth = style?.strokeWidth ?? 1
+  // 分类配色默认无描边（对齐 deck 路径）：每种功能已有填充色，不再叠基础色描边。
+  const strokeWidth = style?.strokeWidth ?? (style?.styleMode === 'categorized' ? 0 : 1)
   const radius = style?.radius ?? 5
   // 默认不透明度 0.8（用户要求：不要太透明，约 80%）。生成/普通图层一视同仁。
-  const opacity = style?.opacity ?? 0.8
+  const opacity = style?.fillOpacity ?? style?.opacity ?? 0.8
+  const vv = style?.visualVariables
+  const opacityVar = vv?.opacity_variable
+  const filter = vv?.filter
+  const hasFilter = filter ? Object.keys(filter).length > 0 : false
+
+  // 数据驱动填充色：高亮无需处理（deck 单要素高亮，静态 paint 无等效），分类/分档优先
+  let fillColor: unknown = style?.fillColor ?? layer.color
+  if (style?.styleMode === 'categorized' && vv?.categorized) {
+    fillColor = categorizedExpression(
+      vv.categorized.field,
+      vv.categorized.classes,
+      style?.fillColor ?? layer.color,
+    )
+  } else if (style?.styleMode === 'graduated' && vv?.graduated) {
+    fillColor = graduatedExpression(
+      vv.graduated.field,
+      vv.graduated.breaks,
+      vv.graduated.palette,
+      style?.fillColor ?? layer.color,
+    )
+  }
+  const fillOpacity = fillOpacityExpression(style, opacityVar)
+
+  const layerSpec = {
+    id,
+    source,
+    ...(hasFilter ? { filter: filterExpression(filter as Record<string, unknown>) } : {}),
+  }
 
   if (layer.geometry === 'Point') {
     return {
-      id,
-      source,
+      ...layerSpec,
       type: 'circle',
       paint: {
         'circle-radius': radius,
-        'circle-color': fill,
-        'circle-opacity': opacity,
+        // color 是数据驱动表达式（分类/分档 match/step）时也是合法的 maplibre 取值
+        'circle-color': fillColor as unknown as string,
+        'circle-opacity': fillOpacity as number,
         'circle-stroke-width': strokeWidth > 0 ? strokeWidth : 0,
-        'circle-stroke-color': strokeWidth > 0 ? stroke : fill,
+        'circle-stroke-color': strokeWidth > 0 ? stroke : (fillColor as unknown as string),
         // 描边与填充同用整体不透明度：不透明度作用于整个符号（对齐 deck 路径）
         'circle-stroke-opacity': strokeWidth > 0 ? opacity : 0,
       },
-    } as LayerSpecification
+    } as unknown as LayerSpecification
   }
 
   return {
-    id,
-    source,
+    ...layerSpec,
     type: 'fill',
     paint: {
-      'fill-color': fill,
-      'fill-opacity': opacity,
+      'fill-color': fillColor as unknown as string,
+      'fill-opacity': fillOpacity as number,
       'fill-outline-color': stroke,
       // 描边与填充同用整体不透明度：不透明度作用于整个符号（对齐 deck 路径）
       'fill-outline-opacity': strokeWidth > 0 ? opacity : 0,
     },
-  } as LayerSpecification
+  } as unknown as LayerSpecification
 }

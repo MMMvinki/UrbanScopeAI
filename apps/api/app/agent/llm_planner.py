@@ -8,6 +8,7 @@
 - 任何异常返回 None，由 planner.plan_for 回退到规则版（演示永不挂）。
 """
 
+import json
 import os
 import re
 
@@ -18,7 +19,7 @@ from app.data_registry import DATA_REGISTRY
 from app.memory_store import get_memory_lines, get_summary_lines
 from app.models.agent import Clarify, PlanResult, PlanStep
 from app.skills import skill_lines
-from app.skills.registry import SKILLS, get_skill, skill_hints
+from app.skills.registry import SKILLS, get_skill, get_skill_spec, skill_hints
 from app.tools.registry import TOOLS
 
 _OPERATIONS = ("coverage", "overlay", "nearest_distance", "density", "kernel_density", "supply_demand", "general", "chat")
@@ -52,6 +53,55 @@ _SKILL_CREATE_RE = re.compile(
 
 def _is_skill_creation_request(question: str) -> bool:
     return bool(_SKILL_CREATE_RE.search(question))
+
+
+# 人口热力语义检测：问题命中「人口/人群/常住 + 热力/热度/画像/密度」或「热力图/哪里人多」等，
+# 即人口热力（population-heatmap）技能的口径。与 planner 系统提示【人口热力路由】同款口径。
+# 用于**确定性兜底**：LLM 常把 intent_id 生成成非平凡 id（napshot 见 population_heatmap_planning_area），
+# 使 get_skill(intent_id) 不命中、executable skill 路由落空 → plan 退回通用模板、人口被误判缺数据。
+# 不赌 LLM 发对 id，命中即强制走人口热力技能。
+_POPULATION_HEAT_RE = re.compile(
+    r"(人口|人群|常住|户籍).{0,10}(热力|热度|画像|密度|分布|结构|构成)"
+    r"|(热力图|热度地图|热度分布|哪里人多|哪里人最多|人口热力)"
+)
+
+
+def _is_population_heat_request(question: str) -> bool:
+    return bool(_POPULATION_HEAT_RE.search(question or ""))
+
+
+# 人口语义词：被 population-heatmap 技能的 huoyan_resident/huoyan_worker 数据源覆盖，
+# 命中人口热力路由时把这些从「缺数据」列表剔除（人口数据在盘上，不是真缺失）。
+_POP_TERMS_RE = re.compile(r"(人口|人群|常住|户籍|热力图|热度)")
+
+
+def _population_heat_plan_detail(targets: list[str], required: list[str] | None = None) -> str:
+    """人口热力确定性 plan 步 detail：写明 skill_id 与人口源，area 图层从已解析 targets 挑。
+
+    area 优先选**非热力图层的范围多边形**（用户指定/上传的研究范围，如 规划范围_568b13），
+    而不是 *_pop_heat 结果热力图层——后者是 skill 自己的产物，不能当裁剪范围（会自引用）。
+    targets 可能不含范围图层（LLM 只把它放 required_data），故回退从 required 挑已注册的
+    非热力图层。
+    """
+    candidates = list(targets) + list(required or [])
+    area = next(
+        (
+            t
+            for t in candidates
+            if t
+            and t != "population"
+            and not t.endswith("_pop_heat")
+            and DATA_REGISTRY.get_layer(t) is not None
+            and getattr(DATA_REGISTRY.get_layer(t), "kind", None) != "heatmap"
+        ),
+        None,
+    )
+    clause = f", area_layer_id={area}" if area else ""
+    return (
+        f"execute_skill_script(skill_id=population-heatmap, population_source=huoyan_resident{clause})"
+        " —— 读慧眼居住人口点（人数）物化 kind=heatmap 连续渐变热力面 + 附人群画像饼图；"
+        "不是核密度/点位密度，勿路由到 kernel-density。"
+    )
 
 
 # ── 解释工具原理：确定性兜底（LLM 偶发把问题复述当 chat summary，见 _explain_for_question）──
@@ -268,6 +318,7 @@ def _system_prompt(conversation_id: str | None = None) -> str:
         "- 【数据缺失 ≠ 追问】：目标对象在【当前项目图层】里没有对应图层（如用户要“人群画像”但无人口数据）**不是**意图模糊，此时**不得输出 clarify**——照常输出正式计划，把缺失对象原文写进 targets/required_data（后端会提示缺失，由用户选择跳过或补数据）；绝对不要在 clarify/choices 里给“用其他数据源/POI 间接推断”之类的替代方案；",
         "- 【防重复追问】：澄清最多 2 轮。对话历史里已出现 Agent 追问且用户已给出回答或授权（如说“可以开始了”“开始吧”“按默认”“继续”）时，必须直接产出正式计划，绝不再 clarify；",
         "- 【命中技能】：问题意图与【当前可用技能】里某个 skill 的用途匹配（如“对 XX POI 做核密度”命中 kernel-density）时，plan 步骤 tool 用 execute_skill_script，并在 plan 步骤的 detail 里写明 skill id；参数以用户实际提供的为准，用户没给的参数不要臆造，由执行阶段向用户追问后补齐；不匹配时才拆成通用分析工具步骤；",
+        "- 【人口热力路由】：问题意图是「人口热力/热力图/热度分布/哪里人多」，或「人口/人群/常住 + 密度热力」组合时，直接命中 population-heatmap 可执行技能——plan 步骤 tool 用 execute_skill_script，detail 写明 skill_id=population-heatmap；不要路由到 kernel-density 或 density 操作（那是点位密度，每个点权重 1，丢人口本值）；人口数据源用户没说就从 huoyan_resident（居住人口）里选；population_source 必须是原始数据源 id（huoyan_resident/huoyan_worker），绝不能选已生成的热力图图层（*_pop_heat）当源；",
         "- 【技能创建任务】：当用户说要「创建/沉淀/生成/制作一个（新）技能」「把刚才的方法做成技能」「新建分析技能」「升级脚本为技能」时——即使用户顺带描述了技能的具体用途（如幼儿园覆盖率检查），这也是**技能创建任务**而非空间分析任务：intent_id 必须是该 skill 的 id（skill-creator），plan 第一步 tool 用 get_skill（skill_id=skill-creator，detail 写“读取 SKILL.md 方法论正文”），后续由执行器按方法论引导（澄清/落盘/校验）；不要把它规划成直接的空间分析。若用户明确要求先提问（如说“先问我第一个问题”）且关键信息未提供，允许先输出一次 clarify 追问；但用户随后给出回答或授权时，必须直接产出正式计划，不得再次 clarify；",
         "- 【数据缺失】：目标对象在【当前项目图层】里没有对应图层（如用户要“人群画像”但无人口数据）时，不要自行改换数据源、也不要用别的图层顶替，把该对象原文如实写进 targets/required_data（即使清单里没有该 id 也照写原文，后端会标记为缺失并在执行前让用户选择跳过或补数据）；",
         "- 只输出一个 JSON 对象。",
@@ -281,6 +332,21 @@ def _resolve_id(text: str) -> str | None:
         return text
     layer = DATA_REGISTRY.get_layer_by_name(text)
     return layer.id if layer is not None else None
+
+
+def _is_known_data_source(text: str) -> bool:
+    """判断 text 是否为可解析的数据源 id（get_source_meta 能命中 → 该数据源始终可读）。
+
+    区分「数据的源」与「分析图层」：源（如 huoyan_resident）不是缺图层的对象，
+    不该进门2 缺失面板——否则每个人口热力请求都要多跳过一次「huoyan_resident 缺失」。
+    真实图库基线与人口/人群等语义标签（_POPULATION_HINTS）照常照旧拦截。
+    """
+    try:
+        from app.data_sources import get_source_meta
+
+        return get_source_meta(text) is not None
+    except Exception:
+        return False
 
 
 def _coerce_targets(raw: object) -> tuple[list[str], list[str]]:
@@ -303,7 +369,9 @@ def _coerce_targets(raw: object) -> tuple[list[str], list[str]]:
             continue
         layer_id = _resolve_id(text)
         if layer_id is None or layer_id == "study_area":
-            if layer_id is None and text not in unmet:
+            # 可解析的数据源 id（如 huoyan_resident）不是缺图层对象：它始终能读，
+            # 不该进门2 缺失列表，正常作为「源」参与分析。
+            if layer_id is None and not _is_known_data_source(text) and text not in unmet:
                 unmet.append(text)
             continue
         if layer_id not in targets:
@@ -580,6 +648,45 @@ def _normalize(question: str, raw: dict, history: list[dict] | None = None) -> P
                 ]
             if not thinking:
                 thinking = f"命中「{prompt_skill.name}」分析方法论，plan 头部 get_skill 加载方法论正文，按方法论执行。"
+
+    # ── 人口热力确定性兜底 ──
+    # 用户问题命中「人口热力/人群画像」语义时，强制路由到 population-heatmap 可执行技能。
+    # LLM 常把 intent_id 生成成非平凡 id（如 population_heatmap_planning_area），使
+    # get_skill(intent_id) 不命中、executable skill 路由落空 → plan 退回通用模板、人口域
+    # 被 _domain_check 误判缺数据（前端弹「跳过/上传/换问法」= 问用户要数据）。这里不赌 LLM
+    # 发对 id，命中即强制 intent_id=population-heatmap、plan 单步 execute_skill_script 并
+    # 免掉人口域缺数据（huoyan_resident 在盘上，人口已覆盖）。
+    if _is_population_heat_request(question):
+        pop_skill = get_skill_spec("population-heatmap")
+        if pop_skill is not None:
+            # 人口由 huoyan_resident 覆盖：把人口/人群等词从缺数据列表剔除，避免误弹缺失面板。
+            unmet = [u for u in unmet if not _POP_TERMS_RE.search(u)]
+            required = [r for r in required if not _POP_TERMS_RE.search(r)]
+            # 剔掉热力结果图层（*_pop_heat）自引用：它不是分析目标，也不该当 targets——
+            # 否则会被误选为 area_layer_id 或当作人口源。原始源由 skill 内部还原/读取。
+            targets = [t for t in targets if not t.endswith("_pop_heat")]
+            required = [r for r in required if not r.endswith("_pop_heat")]
+            # required 里可能是真实范围图层（LLM 只放 required 不放 targets）：补回 targets，
+            # 前端据此呈现分析范围、area 传递到 execute_skill_script。
+            for r in list(required):
+                if r not in targets and DATA_REGISTRY.get_layer(r) is not None and not r.endswith("_pop_heat"):
+                    targets.append(r)
+            intent_id = pop_skill.id
+            # 人口热力是单步技能执行，不套通用模板；area 图层（几何范围）作为 area_layer_id 传参。
+            plan = [
+                PlanStep(
+                    step_id="s1",
+                    label=f"执行「{pop_skill.name}」",
+                    tool="execute_skill_script",
+                    detail=_population_heat_plan_detail(targets, required),
+                )
+            ]
+            if not thinking:
+                thinking = (
+                    f"命中 Skill「{pop_skill.name}」（人口热力确定性路由）：plan 用 execute_skill_script，"
+                    f"population_source=huoyan_resident（居住），area 图层取已解析 targets；"
+                    "人口数据在盘上，不属缺失，已从缺数据列表剔除。"
+                )
 
     return PlanResult(
         intent_id=intent_id,

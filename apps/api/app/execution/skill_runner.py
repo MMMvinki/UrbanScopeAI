@@ -84,6 +84,31 @@ def main(argv: list[str] | None = None) -> int:
     subprocess_runner._install_risky_op_hooks()
     subprocess_runner._install_platform_protection()
 
+    # 技能子进程是全新解释器，DATA_REGISTRY 默认为空 —— 盘上已注册的 workspace 图层
+    # （用户上传的裁剪范围多边形，如 规划范围_*）在这里读不到，导致技能内
+    # engine.load_gdf(area_layer_id) 返回 None，「按范围裁剪」静默退化成全量分析
+    # （population-heatmap 的根治：给定范围却算出全城人口）。这里预载 workspace 图层索引，
+    # 让子进程技能能拿到与前端一致的真实几何。项目层级随 current_project_id（默认 default）
+    # 由 register_generated 内部处理，不会因 None 崩溃。
+    try:
+        from app.workspace import LAYER_DATA_DIR
+        from app.data_registry import DATA_REGISTRY
+
+        # 子进程默认 current_project_id="default"。若父进程在非默认项目下跑 skill，
+        # 先把新鲜注册表切到该项目（载入项目图层），再预载工作区图层 —— 否则
+        # engine.load_gdf(项目area) 返回 None，「按范围裁剪」仍会静默退化成全量。
+        _pid = "default"
+        try:
+            _in = json.loads(in_path.read_text(encoding="utf-8"))
+            _pid = str(_in.get("current_project_id") or "default")
+        except Exception:
+            pass
+        if _pid != "default":
+            DATA_REGISTRY.switch_project(_pid)
+        DATA_REGISTRY.load_workspace_layer_files(LAYER_DATA_DIR)
+    except Exception:
+        traceback.print_exc()  # 预载失败不致命：技能兜底 通过 engine.load_gdf 仍可读到 demo/平台源
+
     save_plot = subprocess_runner._make_local_save_plot()
     emit_chart = subprocess_runner._make_local_emit_chart()
     ns: dict = {"save_plot": save_plot, "emit_chart": emit_chart}

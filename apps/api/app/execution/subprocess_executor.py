@@ -230,6 +230,11 @@ class SubprocessPythonExecutor:
             env.update(self.config.env)
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        # PYTHONUTF8=1 开启 CPython 的 UTF-8 模式（PEP 540）：让裸 open(path,'w') 的默认编码
+        # 也变成 UTF-8，否则 Windows 上默认 GBK 会把带中文的图层文件写成 GBK（Python3.12
+        # 默认的 locale 编码仍是 GBK，PYTHONIOENCODING 只管 stdio 不管文件读写）。缺了它，
+        # execute_code 子进程里 open('data/layers/xx.json','w') 写出的中文图层重启后读不回来。
+        env.setdefault("PYTHONUTF8", "1")
         # 子进程 cwd=workspace（sys.path[0] 是 cwd），app.* 包根目录必须显式注入 PYTHONPATH
         _api_root = str(Path(__file__).resolve().parents[2])
         _existing_pp = env.get("PYTHONPATH")

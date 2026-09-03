@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -65,16 +66,65 @@ def list_sources() -> list[dict]:
     return catalogue().get("sources", [])
 
 
-def get_source_meta(source_id: str) -> dict | None:
-    """按 id 查 metadata；不存在返回 None（调用方诚实失败）。"""
+def _norm(text: str) -> str:
+    """规范化：小写 + 去空白/连接符/后缀点，用于 Latin 名与目录 dataset_id 的可比对。
+
+    链接数据文件夹（data_folder）暴露的 dataset_id 已经 lower + 清洗；清单 path 的 stem
+    未清洗（如 `POI_餐饮` vs `poi餐饮`）。这里收口成同一种规范形再比，避免拉丁名对不上、
+    中文名不受影响。仅作精确匹配外的兼容路径，不做子串包含（避免「人口」误匹配多个源）。
+    """
+    return re.sub(r"[\s_\-.]+", "", str(text)).lower()
+
+
+def _match_spec(src: dict, s: str) -> bool:
+    """规范条目是否接受别名 s：id 精确 / name / 文件 basename（含或不含后缀）。
+
+    先做精确匹配（id / name / 文件 basename / stem 四路），再做规范化兼容（拉丁名大小写与
+    连接符差异）。不做子串包含（避免「人口」这种词误匹配到多个源）。path 为平台外的相对
+    路径（如 `平台数据/百度慧眼数据/居住人口数量及画像202508.shp`），basename 匹配让
+    链接数据文件夹暴露的中文 dataset_id 能反查回本条目。
+    """
+    p = Path(str(src.get("path") or ""))
+    if src.get("id") == s or src.get("name") == s or p.name == s or p.stem == s:
+        return True
+    ns = _norm(s)
+    if not ns:
+        return False
+    return (
+        _norm(src.get("id")) == ns
+        or _norm(src.get("name")) == ns
+        or _norm(p.name) == ns
+        or _norm(p.stem) == ns
+    )
+
+
+def _resolve_source_spec(spec: str) -> dict | None:
+    """把任意「源别名」解析成规范清单条目；无匹配返回 None 并**响亮告警**（C1）。
+
+    链接数据文件夹（data_folder）暴露的中文 dataset_id（如 `居住人口数量及画像202508`）
+    正是清单 `path` 去后缀的 stem；`name`（如 `居住人口数量及画像`）也是合法别名。
+    据此让 agent 从目录里发现的名称能落回规范 id（huoyan_resident），而不必靠猜——
+    否则人口热力 skill 收到 `population_source=居住人口数量及画像202508` 只会
+    「读取失败或无点」。
+    """
+    if not spec or not str(spec).strip():
+        return None
+    s = str(spec).strip()
     for src in list_sources():
-        if src.get("id") == source_id:
+        if _match_spec(src, s):
             return src
+    # 找不到不再静默：肉眼可查「对不上号」，也为诊断记录到底收到了什么别名。
+    logger.warning("数据源别名未匹配：%s（清单内可试 id=%s）", s, [str(x.get("id")) for x in list_sources()][:10])
     return None
 
 
+def get_source_meta(source_id: str) -> dict | None:
+    """按 id（或其别名 name / 文件 basename）查 metadata；不存在返回 None。"""
+    return _resolve_source_spec(source_id)
+
+
 def resolve_path(source_id: str) -> Path | None:
-    """list 中 source_id 对应的原始文件路径（DATA_ROOT / relative path）；缺 source/文件返回 None。"""
+    """list 中 source_id（或其 name/文件 basename 别名）对应的原始文件路径；缺 source/文件返回 None。"""
     meta = get_source_meta(source_id)
     if meta is None:
         return None

@@ -479,23 +479,29 @@ def _run_layer_style_tool(tool: str, params: dict) -> ToolResult:
         field = str(params.get("field") or "").strip()
         if not field:
             return ToolResult(success=False, message="缺少必填参数 field（按哪个分类字段分色）")
-        # 分类字段必须是图层真实字段
-        field_names = {f.name for f in (layer.fields or [])}
+        # 分类字段必须是图层真实字段（meta.fields 注册时常为空，需并入实际 geojson 列兜底）
+        field_names = DATA_REGISTRY.known_field_names(layer_id)
         if field not in field_names:
             return ToolResult(
                 success=False,
                 message=f"图层「{layer.name}」没有字段：{field}。可用字段：{', '.join(sorted(field_names)) or '（无）'}",
             )
         try:
-            style = ls.build_categorized_style(layer_id, field, palette=params.get("palette") or None)
+            style = ls.build_categorized_style(
+                layer_id,
+                field,
+                palette=params.get("palette") or None,
+                mapping=params.get("mapping") or None,
+            )
             patch = ls.apply_renderer_style_keep(layer_id, style, emit=emit)
         except ValueError as exc:
             return ToolResult(success=False, message=str(exc))
         n = len(style["visualVariables"]["categorized"]["classes"])
+        mapped = bool(params.get("mapping"))
         return ToolResult(
             success=True,
             output={"layer_id": layer_id, "field": field, "categories": n, **patch},
-            message=f"已按字段「{field}」分类配色（{n} 类）。",
+            message=f"已按字段「{field}」分类配色（{n} 类，{'精确映射' if mapped else '自动分档'}）。",
         )
 
     if tool == "set_layer_filter":
@@ -522,7 +528,7 @@ def _run_layer_style_tool(tool: str, params: dict) -> ToolResult:
             field = None
         else:
             field = str(field).strip()
-            field_names = {f.name for f in (layer.fields or [])}
+            field_names = DATA_REGISTRY.known_field_names(layer_id)
             if field not in field_names:
                 return ToolResult(
                     success=False,

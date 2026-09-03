@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from typing import Any
 
 from pydantic_ai import Agent
@@ -39,6 +41,11 @@ from .event_bridge import handle_call_tools_node, record_llm_usage
 from .tool_adapter import _RunAborted, build_tools
 
 logger = logging.getLogger(__name__)
+
+# 运行超时（看门哨）：正常分析几秒到几分钟，永不触碰；只防「模型卡死/空转不收敛」。
+# 到点优雅截停（保留已算真实结果、置 stop_reason=run_timeout），绝不误标成服务异常。
+# 可用环境变量 AGENT_RUN_TIMEOUT_SEC 覆盖。
+RUN_TIMEOUT_SEC = int(os.environ.get("AGENT_RUN_TIMEOUT_SEC", "900"))
 
 
 def _build_model() -> OpenAIChatModel:
@@ -118,11 +125,24 @@ async def _pa_run(request: ExecuteRequest, deps: ToolContext, emit: Any | None) 
     run_obj: Any = None
     try:
         cancelled = False
+        run_start = time.monotonic()
         async with agent.iter(llm_executor._user_prompt(request), deps=deps, message_history=messages, cancellation_token=token) as run:
             run_obj = run
             async for node in run:
                 # 断连检查：置位即取消 token（下一检查点抛 RunCancelled），保留已算结果
                 if deps.cancel_event is not None and deps.cancel_event.is_set():
+                    token.cancel()
+                    cancelled = True
+                    break
+                # 看门哨：运行超时未收敛 → 优雅截停（不误标服务异常），保留已算真实结果
+                if time.monotonic() - run_start > RUN_TIMEOUT_SEC:
+                    deps.meta["_pa_stop_reason"] = "run_timeout"
+                    trace.append(
+                        TraceEvent(
+                            type="text",
+                            content=f"分析运行超过 {RUN_TIMEOUT_SEC} 秒仍未收敛，已中断；以下为已完成部分。",
+                        )
+                    )
                     token.cancel()
                     cancelled = True
                     break
@@ -133,7 +153,12 @@ async def _pa_run(request: ExecuteRequest, deps: ToolContext, emit: Any | None) 
                 conclusion = output
             record_llm_usage(deps, run_obj.result)
     except (_RunAborted, RunCancelled, asyncio.CancelledError):
-        interrupted = True
+        # _RunAborted/RunCancelled 的 tool_call_limit / run_timeout 变体：护栏主动截停=**优雅停**，
+        # 不是服务异常（tool_adapter / 本函数已置 _pa_stop_reason 并发出准确文案）。若这里也标
+        # interrupted=True，_assemble 会追加误导性的「服务异常而中断」，与真实原因自相矛盾。
+        # 其余变体（客户端断连取消等）才算真中断，保留原语义。
+        if deps.meta.get("_pa_stop_reason") not in ("tool_call_limit", "run_timeout"):
+            interrupted = True
     except Exception:
         logger.exception("pydai loop failed run=%s", deps.run_id)
         interrupted = True

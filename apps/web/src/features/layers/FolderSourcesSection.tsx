@@ -561,23 +561,23 @@ function SourceCard({
         <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
           <button
             type="button"
-            className="button button--ghost button--sm"
+            className="button button--icon button--icon--enable"
             disabled={busy}
             title="全部启用（最多 20 个）"
+            aria-label="全部启用"
             onClick={() => void handleEnableAll()}
           >
             <PlayCircle aria-hidden="true" />
-            全部启用
           </button>
           <button
             type="button"
-            className="button button--ghost button--sm"
+            className="button button--icon button--icon--disable"
             disabled={busy}
             title="全部停用（移除所有已启用图层）"
+            aria-label="全部停用"
             onClick={() => void handleDisableAll()}
           >
             <CircleOff aria-hidden="true" />
-            全部停用
           </button>
         </span>
       </div>

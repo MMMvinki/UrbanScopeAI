@@ -13,10 +13,13 @@ DuckDB Spatial 用于后续大规模属性/空间聚合（本阶段引擎以 Geo
 from __future__ import annotations
 
 import json
+import logging
 
 import geopandas as gpd
 
 from app.data_registry import DATA_REGISTRY
+
+logger = logging.getLogger(__name__)
 
 # 研究范围在北京市区（约 116.34E，UTM 50N 覆盖 114°-120°E）
 _PROJ = "EPSG:32650"
@@ -26,11 +29,34 @@ _PROJ = "EPSG:32650"
 DEFAULT_COVERAGE_BASE = "shenzhen_communities"
 
 
+def _declared_crs(layer_id: str, geojson: dict) -> str | None:
+    """读图层声明的 CRS：优先内嵌 geojson['crs']（旧格式），否则图层 metadata.crs。"""
+    embedded = geojson.get("crs")
+    if isinstance(embedded, dict):
+        props = embedded.get("properties") or {}
+        return str(props.get("name") or "")
+    layer = DATA_REGISTRY.get_layer(layer_id)
+    crs = getattr(layer, "crs", None)
+    return str(crs) if crs else None
+
+
 def load_gdf(layer_id: str) -> gpd.GeoDataFrame | None:
     """加载图层几何为 UTM 米制 GeoDataFrame；图层缺失或无真实几何返回 None。"""
     geojson = DATA_REGISTRY.get_geojson(layer_id)
     if geojson is None:
         return None
+    # C3 护栏（有界，不做全管线重写）：set_crs 是「贴标签」不是「转换」。若图层声明/内嵌了
+    # 非 4490 的 CRS（如 4326 经纬度无偏移尚可，但投影米制或 GCJ-02 就坏事），贴成 4490 会
+    # 静默引入量纲错误或数百米偏移。这里只做醒目告警（layer_id + 声明 CRS），可见而非不可查；
+    # GCJ-02→WGS-84 转换管线作为独立后续项，不在本批。
+    declared = _declared_crs(layer_id, geojson)
+    if declared and declared.replace(" ", "").lower() not in ("epsg:4490", "4490", "crs84"):
+        logger.warning(
+            "load_gdf 强制 set_crs(EPSG:4490) 于非 4490 图层 %s（声明 CRS=%s）：若此数据为投影米制"
+            "或 GCJ-02 坐标，将产生量纲错误/数百米偏移；GCJ-02 源请用 geometry 列而非经纬度列。",
+            layer_id,
+            declared,
+        )
     features = geojson.get("features") or []
     # 表格图层（无几何）特征全为 null geometry，GeoPandas 会生成无效几何且 set_crs 可能失败，
     # 直接返回 None，交给调用方拒绝（不落入 stable_rate 演示兜底）。

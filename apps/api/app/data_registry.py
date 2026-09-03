@@ -319,7 +319,9 @@ class DataRegistry:
                 continue  # demo 图层以 demo_data 注册表为准，不重复注册
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError):
+                # ValueError 覆盖 JSONDecodeError 与 UnicodeDecodeError：个别文件损坏/非 UTF-8
+                #（如子进程用 GBK 写入的中间产物）时跳过该文件，不让单个坏文件拖垮整轮注册/启动。
                 continue
             features, geometry_types, _bbox = load_feature_collection(data)
             if not features:
@@ -394,6 +396,25 @@ class DataRegistry:
             return None
         self._geojson[layer_id] = data
         return data
+
+    def known_field_names(self, layer_id: str, cap: int = 2000) -> set[str]:
+        """图层真实字段名：meta.fields ∪ 实际 geojson 属性键。
+
+        工具在注册时（clip / extract / register_layer）常把 layer.fields 留成 []，
+        而数据本身有列（OSM 的 building/func_type 等）。样式/过滤/提取若只信
+        meta.fields 会误报「没有字段」而拒绝合法列（历史：set_categorized_style
+        对 a64b40ec_clip 的 building、building_func_poly 的 func_type 均被拒）。
+        这里以实际几何属性为准兜底（真没那列才报没有），并做确定性采样防大图层爆量。
+        """
+        names: set[str] = set()
+        layer = self._layers.get(layer_id)
+        if layer is not None:
+            names |= {f.name for f in (layer.fields or [])}
+        geojson = self.get_geojson(layer_id) or {}
+        for feat in (geojson.get("features") or [])[:cap]:
+            props = feat.get("properties") or {}
+            names |= set(props.keys())
+        return names
 
     def set_geojson(self, layer_id: str, geojson: dict) -> None:
         """写入/更新图层几何（结果图层由工具真计算产出）。"""

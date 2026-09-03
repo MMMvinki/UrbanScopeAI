@@ -67,6 +67,8 @@ export interface BackendLayer {
   kind?: 'vector' | 'raster'
   tile_url?: string
   bbox?: number[] | null
+  /* 热力图层加权字段（后端 model 字段 weightField，Pydantic 按字段名序列化） */
+  weightField?: string | null
   /* DEM 3D 地形（2026-08-30） */
   dem?: boolean
   terrain_url?: string
@@ -643,7 +645,7 @@ export function toLayer(layer: BackendLayer): LayerMetadata {
     tileUrl: layer.tile_url,
     bbox: layer.bbox ?? null,
     dem: layer.dem ?? false,
-    terrainUrl: layer.terrain_url ?? null,
+    terrainUrl: layer.terrain_url,
     opacity: layer.opacity ?? null,
     fillOpacity: layer.fillOpacity ?? null,
     strokeOpacity: layer.strokeOpacity ?? null,
@@ -655,6 +657,7 @@ export function toLayer(layer: BackendLayer): LayerMetadata {
     visualVariables: (layer.visualVariables as LayerStyle['visualVariables']) ?? null,
     labelField: layer.labelField ?? null,
     units: layer.units ?? null,
+    weightField: layer.weightField ?? null,
   }
 }
 

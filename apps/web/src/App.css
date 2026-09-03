@@ -1552,6 +1552,18 @@
   gap: 1px;
 }
 
+.mention-pop__header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 8px 10px 3px;
+  background: var(--surface);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
 .mention-pop__item {
   display: flex;
   align-items: center;
@@ -3360,12 +3372,18 @@ button:disabled {
 
 .layer-group__name {
   flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .layer-group__count {
   font-size: 11px;
   font-weight: 400;
   color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 /* 平台数据分组：顶部独立分区，浅色底区分于用户分组 */
@@ -6478,4 +6496,41 @@ button:disabled {
 }
 .layer-panel__scroll::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
+}
+
+/* 地图悬停要素信息卡（deck.gl getTooltip）：背景色/位置由 deck 管理（translater + pointer-events none），
+   这里只排布卡片内部版式。deck.gl 默认文字色偏淡，覆盖为更清晰的两栏。 */
+.map-hover-tip {
+  color: #e6edf3;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+.map-hover {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.map-hover__title {
+  font-weight: 600;
+  font-size: 12px;
+  padding-bottom: 5px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+.map-hover__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.map-hover__key {
+  color: #9aa7b8;
+  flex-shrink: 0;
+}
+.map-hover__val {
+  color: #e6edf3;
+  text-align: right;
+  word-break: break-word;
+  max-width: 180px;
 }

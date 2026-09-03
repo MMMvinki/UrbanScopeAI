@@ -9,19 +9,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-from pathlib import Path
 
+from app.atomicio import atomic_write_json
 from app.eval import runner
 
 
 def _write_status(path: str, payload: dict) -> None:
     """原子写状态文件（temp + os.replace），避免前端轮询读到半截 JSON。"""
-    p = Path(path)
-    tmp = p.with_name(p.name + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, p)
+    atomic_write_json(path, payload)
 
 
 def main(argv: list[str] | None = None) -> int:

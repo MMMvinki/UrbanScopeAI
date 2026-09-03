@@ -50,6 +50,16 @@ function slugify(value: string): string {
   return slug || 'drawn'
 }
 
+/** HTML 转义：属性值里可能含 < > & " '，喂给 deck.gl getTooltip 的 innerHTML 前必须消毒 */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function webgl2Available(): boolean {
   if (cachedWebgl !== null) return cachedWebgl
   try {
@@ -107,6 +117,11 @@ export function MapWorkspace() {
   const drawColorRef = useRef('#0F172A')
   const startDrawRef = useRef<() => void>(() => {})
   const editStartRef = useRef<(id: string) => void>(() => {})
+  // 绘制/编辑会话期间抑制悬停 tooltip（hover 时不想弹出旧图层信息干扰落点）
+  const drawingRef = useRef(false)
+  useEffect(() => {
+    drawingRef.current = drawActive
+  }, [drawActive])
 
   const layers = useAppStore((s) => s.layers)
   const layerStyles = useAppStore((s) => s.layerStyles)
@@ -119,6 +134,36 @@ export function MapWorkspace() {
   const focusLayer = useAppStore((s) => s.focusLayer)
   const drawRequestTick = useAppStore((s) => s.drawRequestTick)
   const editLayerRequest = useAppStore((s) => s.editLayerRequest)
+
+  // deck.gl 悬停提示：鼠标移到任一数据图层要素上，弹出该要素的属性表（如建筑的名称/功能/高度）。
+  // pickable 的点/面/热力图层已触发 onHover → getTooltip；栅格/3D建筑为 pickable:false 不干扰。
+  const hoverTooltip = (info: { object?: unknown; layer?: { id?: string } }) => {
+    if (drawingRef.current) return null // 绘制/编辑会话不弹
+    const feature = info.object as { properties?: Record<string, unknown> } | undefined
+    const deckId = String(info.layer?.id ?? '')
+    const layerId = deckId.startsWith('deck-label-')
+      ? deckId.slice('deck-label-'.length)
+      : deckId.startsWith('deck-')
+        ? deckId.slice('deck-'.length)
+        : ''
+    const layer = layers.find((item) => item.id === layerId)
+    const props = feature?.properties
+    if (!layer || !props) return null
+    const rows = Object.entries(props)
+      .filter(([, value]) => value !== null && value !== undefined && value !== '')
+      .slice(0, 8) // 只显示前 8 个字段（OSM 建筑标签有限，足够看全）
+      .map(([key, value]) => {
+        const val = typeof value === 'number' ? String(value) : String(value)
+        return `<div class="map-hover__row"><span class="map-hover__key">${escapeHtml(key)}</span><span class="map-hover__val">${escapeHtml(val)}</span></div>`
+      })
+      .join('')
+    if (!rows) return null
+    return {
+      className: 'map-hover-tip',
+      html: `<div class="map-hover"><div class="map-hover__title">${escapeHtml(layer.name)}</div>${rows}</div>`,
+      style: { padding: '8px 10px', maxWidth: '280px', borderRadius: '8px' },
+    }
+  }
 
   // 当前生效底图：Mapbox 底图但没配 token → 回退默认（避免无 token 的栅格 URL 白图）
   const activeBasemap = BASEMAPS.find((b) => b.id === basemapId) ?? BASEMAPS[0]
@@ -385,11 +430,16 @@ export function MapWorkspace() {
     const deckLayers = buildDeckLayers(layers, layerStyles)
     // 3D 建筑开关：show3D 时追加 deck.gl 建筑挤出层（远景不淡出）；关闭时不追加 → 该层随 setProps 移除
     if (show3D) deckLayers.push(...buildBuildings3DLayer())
-    overlay.setProps({ layers: deckLayers })
+    // 悬停在数据图层要素上 → 弹出该要素的属性信息（getTooltip）。pickingRadius 增大命中面积，
+    // 避免建筑密集时点不中；点/面/热力层 pickable:true 已开启 hover。
+    overlay.setProps({ layers: deckLayers, getTooltip: hoverTooltip, pickingRadius: 4 })
     // interleaved 模式下 setProps 只更新了 deck 图层 props（getFillColor 等已变），
     // 但不会主动触发地图画布重绘 —— 导致「改样式地图不变，隐藏再显示（触发相机飞/重建）才更新」。
     // 显式请求一次地图重绘，让样式改动即时上屏。
     mapRef.current?.triggerRepaint()
+    // hoverTooltip 用最新 layers（deck 图层 id → layer 名），layers 已在本数组；去掉该依赖会在
+    // 上层新增图层时用旧 getTooltip 找不到新图层名 —— 与其余 effect 的惯例一致，不逐帧重跑。
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- layers 已覆盖，hoverTooltip 随 renders 重建
   }, [layers, layerStyles, deckActive, geojsonTick, show3D])
 
   // 图层同步（MapLibre 内置路径）：deck.gl 接管时不重复渲染。

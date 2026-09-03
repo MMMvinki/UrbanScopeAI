@@ -36,7 +36,7 @@ def run_query_features(params: QueryFeaturesParams | dict) -> ToolResult:
         return ToolResult(success=False, message=f"未找到图层：{layer_id}")
 
     conditions = params.filter or {}
-    known_fields = {f.name for f in (layer.fields or [])}
+    known_fields = DATA_REGISTRY.known_field_names(layer_id)
     if conditions:
         unknown = [f for f in conditions if f not in known_fields]
         if unknown:
